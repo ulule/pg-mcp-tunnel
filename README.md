@@ -23,7 +23,7 @@ MCP client ──stdio──▶ pg-mcp-tunnel ──stdio──▶ postgres-mcp 
 ## Install
 
 ```bash
-go install github.com/hadrien/pg-mcp-tunnel/cmd/pg-mcp-tunnel@latest
+go install github.com/ulule/pg-mcp-tunnel@latest
 ```
 
 You also need `uv` and `crystaldba/postgres-mcp` reachable via `uv run postgres-mcp`.
