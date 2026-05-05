@@ -1,0 +1,39 @@
+# Example config for pg-mcp-tunnel.
+# Copy to ~/.config/pg-mcp-tunnel/config.yaml and adjust.
+
+targets:
+  # Direct local connection (no SSH).
+  local:
+    postgres:
+      uri: postgresql://user:password@localhost:5432/mydb?sslmode=disable
+    access_mode: unrestricted
+
+  copy_prod:
+    postgres:
+      uri: postgresql://user:password@localhost:5432/mydb2?sslmode=disable
+    access_mode: unrestricted
+
+  # Remote target via SSH tunnel.
+  prod:
+    ssh:
+      host: remotehost.prod.com
+      user: username
+    postgres:
+      remote_host: localhost
+      remote_port: 5432
+      database: myremotedb
+      user: myuser
+      sslmode: disable
+    access_mode: restricted
+
+  sandbox:
+    ssh:
+      host: remotehost.sandbox.com
+      user: username
+    postgres:
+      remote_host: localhost
+      remote_port: 5432
+      database: myremotedb2
+      user: myuser
+      sslmode: disable
+    access_mode: unrestricted
