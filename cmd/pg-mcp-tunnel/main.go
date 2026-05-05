@@ -12,9 +12,9 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/hadrien/pg-mcp-tunnel/internal/config"
-	"github.com/hadrien/pg-mcp-tunnel/internal/proxy"
-	"github.com/hadrien/pg-mcp-tunnel/internal/sshtunnel"
+	"github.com/ulule/pg-mcp-tunnel/internal/config"
+	"github.com/ulule/pg-mcp-tunnel/internal/proxy"
+	"github.com/ulule/pg-mcp-tunnel/internal/sshtunnel"
 )
 
 const (

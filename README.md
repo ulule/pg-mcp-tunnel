@@ -22,11 +22,13 @@ MCP client ──stdio──▶ pg-mcp-tunnel ──stdio──▶ postgres-mcp 
 
 ## Install
 
+### 1. Install the Go binary
+
 ```bash
 go install github.com/ulule/pg-mcp-tunnel@latest
 ```
 
-You also need `uv` and `crystaldba/postgres-mcp` reachable via `uv run postgres-mcp`.
+Verify with `uv run postgres-mcp --help`. The Go binary spawns `uv run postgres-mcp` as a subprocess.
 
 ## Configure
 
@@ -62,7 +64,7 @@ In `.mcp.json`:
     "postgres-local": {
       "command": "pg-mcp-tunnel",
       "args": ["--target", "local"]
-    }
+    },
     "postgres-prod": {
       "command": "pg-mcp-tunnel",
       "args": ["--target", "prod"]

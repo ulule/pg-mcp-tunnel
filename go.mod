@@ -1,4 +1,4 @@
-module github.com/hadrien/pg-mcp-tunnel
+module github.com/ulule/pg-mcp-tunnel
 
 go 1.25.0
 
