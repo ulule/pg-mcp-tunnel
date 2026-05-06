@@ -22,10 +22,16 @@ MCP client ──stdio──▶ pg-mcp-tunnel ──stdio──▶ postgres-mcp 
 
 ## Install
 
-### 1. Install the Go binary
+### 1. Install `postgres-mcp`
 
 ```bash
-go install github.com/ulule/pg-mcp-tunnel@latest
+uv pip install postgres-mcp --system
+```
+
+### 2. Install the Go binary
+
+```bash
+go install github.com/ulule/pg-mcp-tunnel/cmd/pg-mcp-tunnel@latest
 ```
 
 Verify with `uv run postgres-mcp --help`. The Go binary spawns `uv run postgres-mcp` as a subprocess.
