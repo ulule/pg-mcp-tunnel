@@ -8,17 +8,25 @@ It lets Claude Code (or any MCP client) talk to a Postgres database that is only
 
 ```
 MCP client ──stdio──▶ pg-mcp-tunnel ──stdio──▶ postgres-mcp (Python)
+                            │                         │
+                            │ net.Listen              │ DATABASE_URI=
+                            ▼                         │  127.0.0.1:LOCAL
+                    127.0.0.1:LOCAL ◀────────────────┘
                             │
-                            │ in-process SSH tunnel
+                            │ TCP proxy (Go)
                             ▼
-                    127.0.0.1:RANDOM ◀──SSH channel──▶ remote-host:5432
+                    127.0.0.1:INTERNAL ◀──ssh -L──▶ remote-host:5432
+                            ▲
+                            │ shepherd (sh + lifeline FD 3)
+                            │ kills ssh if pg-mcp-tunnel dies (any cause)
 ```
 
-- The binary opens an SSH connection (auth via `ssh-agent` or `~/.ssh/config`).
-- It listens on a random `127.0.0.1` port and forwards connections to the remote Postgres through the SSH channel.
-- It launches `uv run postgres-mcp` as a subprocess with `DATABASE_URI` pointing to that local port.
-- Stdin/stdout are passed straight through, so the MCP protocol is fully transparent.
-- When the client closes (or you kill the binary), the subprocess and the SSH tunnel are torn down cleanly.
+- **Async startup.** pg-mcp-tunnel binds the user-visible local port itself (`net.Listen`) in milliseconds and launches `uv run postgres-mcp` immediately. ssh runs in parallel on a separate internal port; per inbound connection the Go proxy waits for ssh to come up, then forwards bytes. Claude doesn't time out on MCP `initialize` while ssh is still negotiating with the remote.
+- **SSH auth** is delegated to OpenSSH: `ssh-agent`, `~/.ssh/config`, `ProxyCommand`/`ProxyJump`, FIDO keys, the macOS Keychain — all work out of the box.
+- **Stdio passthrough.** postgres-mcp's stdin/stdout are wired straight to the MCP client; the MCP protocol is fully transparent.
+- **DATABASE_URI** points at the user-visible local port with `connect_timeout=30` appended, so psycopg waits patiently while the proxy holds the connection until ssh has finished its handshake.
+- **No orphans on parent death.** ssh runs under a `/bin/sh` shepherd that watches a lifeline pipe on FD 3. When pg-mcp-tunnel dies for any reason — clean shutdown, panic, SIGKILL, Claude force-quit — the kernel closes the pipe, the shepherd reads EOF, SIGTERMs ssh, and exits. No more stray `ssh -N` processes accumulating in the background.
+- **Failure surfacing.** If ssh dies or doesn't come up within 30 s, the tail of ssh's stderr (8 KB ring buffer) is captured. The local listener is closed (subsequent reconnects get `ECONNREFUSED` instantly instead of hanging 30 s), and pg-mcp-tunnel exits with the ssh error on its own stderr — which Claude Desktop shows in the "Server disconnected" tooltip.
 
 ## Install
 
