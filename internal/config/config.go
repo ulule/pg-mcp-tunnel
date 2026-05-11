@@ -116,6 +116,12 @@ func (t *Target) BuildURI(localPort int) string {
 	if t.Postgres.SSLMode != "" {
 		q.Set("sslmode", t.Postgres.SSLMode)
 	}
+	// Give psycopg patience while pg-mcp-tunnel's TCP proxy is waiting for the
+	// async ssh tunnel to come up. Without this, postgres-mcp's first connect
+	// to 127.0.0.1:localPort accepts at the TCP level (we always listen) but
+	// the postgres handshake hangs until ssh is ready — and psycopg's default
+	// connect_timeout is short enough to time out before fw1+ssh negotiates.
+	q.Set("connect_timeout", "30")
 	u.RawQuery = q.Encode()
 	return u.String()
 }

@@ -59,7 +59,7 @@ targets:
 	}
 	tg := cfg.Targets["prod"]
 	got := tg.BuildURI(54321)
-	want := "postgresql://alice@127.0.0.1:54321/mydb?sslmode=disable"
+	want := "postgresql://alice@127.0.0.1:54321/mydb?connect_timeout=30&sslmode=disable"
 	if got != want {
 		t.Errorf("BuildURI = %q, want %q", got, want)
 	}

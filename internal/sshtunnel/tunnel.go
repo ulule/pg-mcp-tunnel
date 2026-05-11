@@ -4,6 +4,14 @@
 // We deliberately do NOT reimplement an SSH client: OpenSSH already handles
 // ProxyCommand, ProxyJump, certificate auth, FIDO keys, the macOS Keychain,
 // and ssh-agent forwarding correctly. Our job is just to orchestrate.
+//
+// Architecture: pg-mcp-tunnel binds the user-visible local port itself with a
+// Go net.Listen, and ssh -L binds a different internal port. Per inbound
+// connection we wait for ssh to come up and then proxy bytes through. This
+// means Open() returns within milliseconds (the listener is already up), so
+// the MCP subprocess (postgres-mcp) can start in parallel with ssh tunnel
+// setup, and Claude Desktop doesn't time out on the MCP initialize while ssh
+// is still negotiating with the remote.
 package sshtunnel
 
 import (
@@ -46,6 +54,20 @@ wait "$watcher_pid" 2>/dev/null
 exit "$status"
 `
 
+// Time budget for ssh -L to bind its internal port after we launch it. After
+// this window, accepted client connections start being dropped with a clear
+// log line rather than hanging.
+const sshReadyTimeout = 30 * time.Second
+
+// Time budget for a single accepted connection to wait for ssh to come up
+// before being dropped. Should be ~equal to psycopg's connect_timeout we set
+// in the DSN so postgres-mcp gets a clean error rather than a deadlock.
+const perConnWaitForReady = 30 * time.Second
+
+// Size of the in-memory ring that captures the tail of ssh's stderr. Enough
+// to hold a couple of "Permission denied (publickey)" lines plus context.
+const stderrRingSize = 8192
+
 type Config struct {
 	Host string
 	User string // optional
@@ -53,8 +75,10 @@ type Config struct {
 }
 
 type Tunnel struct {
-	cmd       *exec.Cmd
-	localPort int
+	shepherd  *exec.Cmd
+	localPort int // user-visible port we listen on (passed to postgres-mcp)
+	sshPort   int // internal port ssh -L binds to
+	listener  net.Listener
 	logger    *slog.Logger
 
 	// lifelineW is the write end of the lifeline pipe inherited by the shepherd.
@@ -62,14 +86,27 @@ type Tunnel struct {
 	// process exit (including SIGKILL), which triggers the shepherd to kill ssh.
 	lifelineW *os.File
 
+	stderrRing *ringBuffer // captures the tail of ssh's stderr for error surfacing
+
+	sshReady chan struct{} // closed when ssh -L's internal port is listening
+	closeCh  chan struct{} // closed by Close() to short-circuit waits
+
+	failedCh   chan struct{} // closed when the tunnel has permanently failed
+	failOnce   sync.Once
+	failReason error
+
 	closeOnce sync.Once
 	closeErr  error
-	doneCh    chan struct{}
+	doneCh    chan struct{} // closed when the shepherd process exits
 }
 
-// Open opens an SSH-tunneled local TCP listener forwarding to remoteAddr
-// (e.g. "localhost:5432"). It blocks until the local port is ready to accept
-// connections, or returns an error if the tunnel fails to come up.
+// Open spawns an ssh -L tunnel and opens the local user-visible TCP listener
+// immediately. It returns as soon as the listener is bound (typically < 5ms),
+// without waiting for ssh to negotiate with the remote. Connections accepted
+// on the local port wait (up to ~30s) for ssh to come up, then are proxied.
+//
+// The caller MUST call Close() when done, which tears down the listener, the
+// ssh shepherd, and signals any in-flight goroutines.
 func Open(ctx context.Context, cfg Config, remoteAddr string, logger *slog.Logger, stderr io.Writer) (*Tunnel, error) {
 	if logger == nil {
 		logger = slog.Default()
@@ -82,9 +119,22 @@ func Open(ctx context.Context, cfg Config, remoteAddr string, logger *slog.Logge
 		return nil, fmt.Errorf("parse remote addr %q: %w", remoteAddr, err)
 	}
 
-	localPort, err := pickFreePort()
+	// Listener for the user-visible port: opened synchronously so postgres-mcp's
+	// first TCP connect always succeeds.
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return nil, fmt.Errorf("pick local port: %w", err)
+		return nil, fmt.Errorf("open local listener: %w", err)
+	}
+	localPort := listener.Addr().(*net.TCPAddr).Port
+
+	// Pick a separate ephemeral port for ssh -L's internal bind. There's an
+	// unavoidable race here (the port could be claimed by another process
+	// between pick and bind), but in practice it's small and ssh will fail
+	// fast with "address already in use" which we'd see in stderr/log.
+	sshPort, err := pickFreePort()
+	if err != nil {
+		_ = listener.Close()
+		return nil, fmt.Errorf("pick ssh internal port: %w", err)
 	}
 
 	target := cfg.Host
@@ -98,7 +148,7 @@ func Open(ctx context.Context, cfg Config, remoteAddr string, logger *slog.Logge
 		"-o", "ServerAliveInterval=60",
 		"-o", "ServerAliveCountMax=3",
 		"-o", "StrictHostKeyChecking=accept-new",
-		"-L", fmt.Sprintf("127.0.0.1:%d:%s:%s", localPort, remoteHost, remotePort),
+		"-L", fmt.Sprintf("127.0.0.1:%d:%s:%s", sshPort, remoteHost, remotePort),
 	}
 	if cfg.Port > 0 {
 		args = append(args, "-p", strconv.Itoa(cfg.Port))
@@ -106,49 +156,184 @@ func Open(ctx context.Context, cfg Config, remoteAddr string, logger *slog.Logge
 	args = append(args, target)
 
 	if _, err := exec.LookPath("ssh"); err != nil {
+		_ = listener.Close()
 		return nil, fmt.Errorf("`ssh` not found in PATH: %w", err)
 	}
 
-	logger.Info("launching ssh tunnel via shepherd",
-		"target", target, "local_port", localPort, "remote", remoteAddr,
-		"argv", append([]string{"ssh"}, args...))
+	logger.Info("launching ssh tunnel via shepherd (async)",
+		"target", target, "local_port", localPort, "ssh_port", sshPort,
+		"remote", remoteAddr, "argv", append([]string{"ssh"}, args...))
 
-	cmd, lifelineW, err := launchShepherd(append([]string{"ssh"}, args...), stderr)
+	// Tee ssh's stderr into a ring buffer so we can surface the tail in error
+	// messages (e.g. "Permission denied (publickey)") when ssh fails.
+	stderrRing := newRingBuffer(stderrRingSize, stderr)
+
+	cmd, lifelineW, err := launchShepherd(append([]string{"ssh"}, args...), stderrRing)
 	if err != nil {
+		_ = listener.Close()
 		return nil, err
 	}
 
 	t := &Tunnel{
-		cmd:       cmd,
-		localPort: localPort,
-		logger:    logger,
-		lifelineW: lifelineW,
-		doneCh:    make(chan struct{}),
+		shepherd:   cmd,
+		localPort:  localPort,
+		sshPort:    sshPort,
+		listener:   listener,
+		logger:     logger,
+		lifelineW:  lifelineW,
+		stderrRing: stderrRing,
+		sshReady:   make(chan struct{}),
+		closeCh:    make(chan struct{}),
+		failedCh:   make(chan struct{}),
+		doneCh:     make(chan struct{}),
 	}
 
-	// Watch for early shepherd/ssh death.
+	// Watch for shepherd death. Closing the listener unblocks acceptLoop. If
+	// the shepherd died spontaneously (not via Close()), mark the tunnel as
+	// failed so the host process can surface a clean error and exit.
 	go func() {
 		_ = cmd.Wait()
 		close(t.doneCh)
+		_ = t.listener.Close()
+
+		select {
+		case <-t.closeCh:
+			// Intentional Close() — not a failure.
+			return
+		default:
+		}
+		t.markFailed(fmt.Errorf("ssh process exited unexpectedly: %s", t.stderrRing.tail()))
 	}()
 
-	if err := waitListening(ctx, localPort, t.doneCh, 20*time.Second); err != nil {
-		_ = t.Close()
-		return nil, fmt.Errorf("tunnel did not come up: %w", err)
-	}
+	// Background: probe ssh's internal port and close sshReady once it's up.
+	go t.probeSSHReady(ctx)
 
-	logger.Info("ssh tunnel established", "local_port", localPort)
+	// Accept loop: per-connection handler waits for sshReady then proxies.
+	go t.acceptLoop()
+
 	return t, nil
 }
 
 func (t *Tunnel) LocalPort() int { return t.localPort }
 
-// Done returns a channel that is closed when the underlying ssh process exits.
+// Done returns a channel that is closed when the underlying ssh shepherd exits.
 func (t *Tunnel) Done() <-chan struct{} { return t.doneCh }
+
+// Failed returns a channel that is closed when the tunnel has permanently
+// failed (ssh died unexpectedly, or did not come up within the timeout).
+// Callers should also consult FailReason() to retrieve a human-readable error.
+func (t *Tunnel) Failed() <-chan struct{} { return t.failedCh }
+
+// FailReason returns the error explaining why the tunnel failed, or nil if it
+// hasn't failed yet. Includes the tail of ssh's stderr when available.
+func (t *Tunnel) FailReason() error { return t.failReason }
+
+// markFailed records a permanent tunnel failure exactly once, closes the
+// listener and the shepherd's lifeline (which SIGTERMs ssh), and signals
+// Failed() subscribers. Subsequent calls are no-ops.
+func (t *Tunnel) markFailed(err error) {
+	t.failOnce.Do(func() {
+		t.failReason = err
+		// Tear down the listener so further postgres-mcp reconnects get
+		// ECONNREFUSED immediately instead of waiting perConnWaitForReady.
+		if t.listener != nil {
+			_ = t.listener.Close()
+		}
+		// Tell the shepherd to terminate ssh (graceful path).
+		if t.lifelineW != nil {
+			_ = t.lifelineW.Close()
+		}
+		close(t.failedCh)
+	})
+}
+
+// probeSSHReady polls ssh's internal port until it accepts connections or
+// gives up. On success it closes t.sshReady.
+func (t *Tunnel) probeSSHReady(ctx context.Context) {
+	deadline := time.Now().Add(sshReadyTimeout)
+	addr := "127.0.0.1:" + strconv.Itoa(t.sshPort)
+	for {
+		select {
+		case <-t.doneCh:
+			return
+		case <-t.closeCh:
+			return
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			t.logger.Info("ssh tunnel established", "local_port", t.localPort, "ssh_port", t.sshPort)
+			close(t.sshReady)
+			return
+		}
+		if !isConnRefused(err) {
+			t.logger.Warn("ssh tunnel probe error", "err", err)
+			return
+		}
+		if time.Now().After(deadline) {
+			t.logger.Warn("ssh tunnel did not come up within timeout",
+				"ssh_port", t.sshPort, "timeout", sshReadyTimeout)
+			t.markFailed(fmt.Errorf("ssh tunnel did not come up within %v: %s",
+				sshReadyTimeout, t.stderrRing.tail()))
+			return
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+}
+
+// acceptLoop accepts client connections on the user-visible port and spawns a
+// handler per connection. Exits when the listener is closed.
+func (t *Tunnel) acceptLoop() {
+	for {
+		client, err := t.listener.Accept()
+		if err != nil {
+			return // listener closed (Close() or shepherd death)
+		}
+		go t.handleConn(client)
+	}
+}
+
+// handleConn waits for ssh to be ready then proxies bytes between the client
+// and ssh's internal port in both directions until either side closes.
+func (t *Tunnel) handleConn(client net.Conn) {
+	defer client.Close()
+
+	select {
+	case <-t.sshReady:
+	case <-t.doneCh:
+		return
+	case <-t.closeCh:
+		return
+	case <-time.After(perConnWaitForReady):
+		t.logger.Warn("dropping client connection: ssh tunnel not ready in time",
+			"remote", client.RemoteAddr(), "timeout", perConnWaitForReady)
+		return
+	}
+
+	upstream, err := net.DialTimeout("tcp", "127.0.0.1:"+strconv.Itoa(t.sshPort), 5*time.Second)
+	if err != nil {
+		t.logger.Warn("dial ssh internal port failed", "err", err)
+		return
+	}
+	defer upstream.Close()
+
+	done := make(chan struct{}, 2)
+	go func() { _, _ = io.Copy(upstream, client); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(client, upstream); done <- struct{}{} }()
+	<-done
+}
 
 func (t *Tunnel) Close() error {
 	t.closeOnce.Do(func() {
-		if t.cmd.Process == nil {
+		close(t.closeCh)
+		if t.listener != nil {
+			_ = t.listener.Close()
+		}
+		if t.shepherd == nil || t.shepherd.Process == nil {
 			return
 		}
 		// Graceful: closing the lifeline write end causes the shepherd's watcher
@@ -158,11 +343,11 @@ func (t *Tunnel) Close() error {
 		}
 		// Defense in depth: SIGTERM the shepherd's process group as well, in case
 		// it's wedged (e.g. ssh ignored SIGTERM).
-		_ = syscall.Kill(-t.cmd.Process.Pid, syscall.SIGTERM)
+		_ = syscall.Kill(-t.shepherd.Process.Pid, syscall.SIGTERM)
 		select {
 		case <-t.doneCh:
 		case <-time.After(3 * time.Second):
-			_ = syscall.Kill(-t.cmd.Process.Pid, syscall.SIGKILL)
+			_ = syscall.Kill(-t.shepherd.Process.Pid, syscall.SIGKILL)
 			<-t.doneCh
 		}
 	})
@@ -218,33 +403,6 @@ func pickFreePort() (int, error) {
 		return 0, err
 	}
 	return port, nil
-}
-
-func waitListening(ctx context.Context, port int, doneCh <-chan struct{}, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	addr := "127.0.0.1:" + strconv.Itoa(port)
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-doneCh:
-			return errors.New("ssh process exited before tunnel came up")
-		default:
-		}
-
-		conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
-		if err == nil {
-			_ = conn.Close()
-			return nil
-		}
-		if !isConnRefused(err) {
-			return err
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("timed out waiting for %s", addr)
-		}
-		time.Sleep(150 * time.Millisecond)
-	}
 }
 
 func isConnRefused(err error) bool {

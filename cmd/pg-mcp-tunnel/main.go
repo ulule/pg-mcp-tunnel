@@ -82,23 +82,47 @@ func run() error {
 		defer t.Close()
 		tunnelRef = t
 		uri = tg.BuildURI(t.LocalPort())
+
+		// Watchdog: if the tunnel permanently fails (ssh died, or never came
+		// up), cancel ctx so the subprocess is torn down promptly. The error
+		// is checked after proxy.Run returns and surfaced as the host error,
+		// which Claude Desktop shows in its MCP "Server disconnected" tooltip.
+		go func() {
+			select {
+			case <-t.Failed():
+				logger.Error("ssh tunnel failed", "err", t.FailReason())
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
 	} else {
 		uri = tg.BuildURI(0)
 	}
-	_ = tunnelRef // kept to make defer chain explicit
 
 	argv := []string{"uv", "run", "postgres-mcp", "--access-mode=" + tg.Mode()}
 	env := append(os.Environ(), "DATABASE_URI="+uri)
 
 	logger.Info("launching subprocess", "cmd", argv, "uri_host_only", maskURI(uri))
 
-	if err := proxy.Run(ctx, argv, env, logFile); err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			logger.Warn("subprocess exited non-zero", "code", exitErr.ExitCode())
-			return err
+	runErr := proxy.Run(ctx, argv, env, logFile)
+
+	// If the tunnel failed, prefer that as the user-visible error: it
+	// explains *why* postgres-mcp couldn't connect (e.g. "Permission denied
+	// (publickey)") rather than the generic "subprocess exited" downstream.
+	if tunnelRef != nil {
+		if reason := tunnelRef.FailReason(); reason != nil {
+			fmt.Fprintln(os.Stderr, "pg-mcp-tunnel: ssh tunnel failed:", reason)
+			return reason
 		}
-		return fmt.Errorf("subprocess: %w", err)
+	}
+
+	if runErr != nil {
+		var exitErr *exec.ExitError
+		if errors.As(runErr, &exitErr) {
+			logger.Warn("subprocess exited non-zero", "code", exitErr.ExitCode())
+			return runErr
+		}
+		return fmt.Errorf("subprocess: %w", runErr)
 	}
 	logger.Info("subprocess exited cleanly")
 	return nil
