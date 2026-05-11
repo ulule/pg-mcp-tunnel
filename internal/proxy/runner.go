@@ -18,6 +18,12 @@ import (
 //
 // The returned error is nil if the child exited cleanly with code 0; otherwise
 // it carries the exit code via *exec.ExitError so the caller can propagate it.
+//
+// Note: no parent-death shepherd is needed here (contrast with internal/sshtunnel).
+// The MCP child (e.g. postgres-mcp) is tethered to the host's stdin pipe via
+// cmd.Stdin = os.Stdin: when Claude Desktop quits and closes the pipe, the child
+// reads EOF on stdin and shuts down on its own. ssh -N does not read stdin, which
+// is why sshtunnel needs an explicit lifeline-pipe shepherd.
 func Run(ctx context.Context, argv []string, env []string, logStderr io.Writer) error {
 	if len(argv) == 0 {
 		return errors.New("empty argv")
