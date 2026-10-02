@@ -42,7 +42,7 @@ func run() error {
 		target     = flag.String("target", "", "target name from config (required)")
 		configPath = flag.String("config", defaultConfigPath(), "path to config.yaml")
 		logPath    = flag.String("log-file", "", "path to log file (default ~/.cache/pg-mcp-tunnel/<target>.log)")
-		record     = flag.Bool("record-queries", true, "record observed SQL to ~/.cache/pg-mcp-tunnel/<target>"+querylog.FileSuffix+" for `pg-mcp-tunnel ui`")
+		record     = flag.Bool("record-queries", true, "record observed SQL to /tmp/pg-mcp-tunnel-<uid>/<target>"+querylog.FileSuffix+" for `pg-mcp-tunnel ui`")
 	)
 	flag.Parse()
 
@@ -174,7 +174,7 @@ func cacheDir() (string, error) {
 }
 
 func openRecorder(target string) (*querylog.Recorder, error) {
-	dir, err := cacheDir()
+	dir, err := querylog.DefaultDir()
 	if err != nil {
 		return nil, err
 	}

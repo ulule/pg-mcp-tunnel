@@ -14,6 +14,7 @@ import (
 	"syscall"
 
 	"github.com/ulule/pg-mcp-tunnel/internal/config"
+	"github.com/ulule/pg-mcp-tunnel/internal/querylog"
 	"github.com/ulule/pg-mcp-tunnel/internal/webui"
 )
 
@@ -27,7 +28,7 @@ func runUI(args []string) error {
 	)
 	_ = fs.Parse(args)
 
-	dir, err := cacheDir()
+	dir, err := querylog.DefaultDir()
 	if err != nil {
 		return err
 	}

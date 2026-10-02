@@ -89,7 +89,7 @@ In `.mcp.json`:
 
 ## Live query dashboard
 
-Every `pg-mcp-tunnel --target X` process observes the Postgres wire protocol flowing through its relay and appends one JSON line per query to `~/.cache/pg-mcp-tunnel/X.queries.jsonl` (SQL, duration, command tag, row count, error / SQLSTATE, connection open/close). This includes the queries postgres-mcp issues on its own (`BEGIN TRANSACTION READ ONLY`, health checks, catalog introspection).
+Every `pg-mcp-tunnel --target X` process observes the Postgres wire protocol flowing through its relay and appends one JSON line per query to `/tmp/pg-mcp-tunnel-<uid>/X.queries.jsonl`: SQL, duration, command tag, row count, error / SQLSTATE, connection open/close. `/tmp` is wiped at reboot, so recordings start fresh. This includes the queries postgres-mcp issues on its own (`BEGIN TRANSACTION READ ONLY`, health checks, catalog introspection).
 
 ```bash
 pg-mcp-tunnel ui --open        # http://localhost:7878
