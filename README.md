@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.png" alt="pg-mcp-tunnel logo" width="130" height="130" />
+  <img src="assets/logo.png" alt="pg-mcp-tunnel logo" width="280" />
 </p>
 
 # pg-mcp-tunnel
