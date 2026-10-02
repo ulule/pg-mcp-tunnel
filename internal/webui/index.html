@@ -1,0 +1,506 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pg-mcp-tunnel · live queries</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --panel-2: #f0f2f5; --border: #e2e5ea;
+  --text: #1b1f24; --muted: #6a7280; --faint: #9aa1ab;
+  --accent: #3b6fd8; --ok: #1f8a4c; --warn: #b7791f; --err: #c53030;
+  --err-bg: #fdf0f0; --kw: #7c3aed; --str: #0f766e; --num: #b45309; --cmt: #8a8f98;
+  --row-hover: #f3f5f8; --sel: #e8eefb;
+  --mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1115; --panel: #161920; --panel-2: #1c2029; --border: #262b36;
+    --text: #e4e7ec; --muted: #8b93a1; --faint: #5d6573;
+    --accent: #6c9cff; --ok: #4cc38a; --warn: #e0a645; --err: #f87171;
+    --err-bg: #2a1618; --kw: #c4a5ff; --str: #5eead4; --num: #fbbf6b; --cmt: #6b7280;
+    --row-hover: #1b1f27; --sel: #1d2638;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--bg); color: var(--text); font: 13px/1.45 var(--sans); display: flex; flex-direction: column; }
+
+header { display: flex; align-items: center; gap: 16px; padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--panel); }
+header h1 { font-size: 14px; margin: 0; font-weight: 600; letter-spacing: .2px; white-space: nowrap; }
+header h1 span { color: var(--muted); font-weight: 400; }
+.live { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
+.dot.on { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 25%, transparent); }
+.dot.pulse { animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--ok) 0%, transparent); } }
+.kpis { display: flex; gap: 18px; margin-left: auto; }
+.kpi { display: flex; flex-direction: column; align-items: flex-end; }
+.kpi b { font: 600 15px var(--mono); }
+.kpi small { color: var(--muted); font-size: 11px; }
+
+main { flex: 1; display: flex; min-height: 0; }
+aside { width: 270px; flex: none; border-right: 1px solid var(--border); background: var(--panel); overflow-y: auto; }
+aside h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin: 14px 14px 6px; font-weight: 600; }
+.db { padding: 9px 14px; cursor: pointer; border-left: 3px solid transparent; }
+.db:hover { background: var(--row-hover); }
+.db.active { background: var(--sel); border-left-color: var(--c, var(--accent)); }
+.db .top { display: flex; align-items: center; gap: 8px; }
+.db .name { font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.db .count { font: 12px var(--mono); color: var(--muted); }
+.db .meta { display: flex; gap: 10px; color: var(--muted); font: 11px var(--mono); margin: 4px 0 0 16px; }
+.db .meta .e { color: var(--err); }
+.db svg { display: block; margin: 6px 0 0 16px; width: calc(100% - 16px); height: 22px; }
+
+section { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 16px; border-bottom: 1px solid var(--border); background: var(--panel); }
+.tabs, .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+.tabs button, .seg button { border: 0; background: transparent; color: var(--muted); padding: 5px 11px; font: inherit; cursor: pointer; }
+.tabs button + button, .seg button + button { border-left: 1px solid var(--border); }
+.tabs button.on, .seg button.on { background: var(--panel-2); color: var(--text); font-weight: 600; }
+input[type=search] { flex: 1; min-width: 160px; max-width: 420px; padding: 5px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg); color: var(--text); font: 12px var(--mono); }
+input[type=search]:focus { outline: 2px solid color-mix(in srgb, var(--accent) 40%, transparent); border-color: var(--accent); }
+label.chk { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); cursor: pointer; user-select: none; }
+.btn { border: 1px solid var(--border); background: var(--panel); color: var(--text); border-radius: 7px; padding: 5px 11px; font: inherit; cursor: pointer; }
+.btn:hover { background: var(--panel-2); }
+.btn.hot { border-color: var(--accent); color: var(--accent); }
+.spacer { flex: 1; }
+
+.view { flex: 1; overflow-y: auto; }
+.row { display: grid; grid-template-columns: 84px 108px 70px 76px minmax(0, 1fr); gap: 10px; align-items: baseline; padding: 6px 16px; border-bottom: 1px solid var(--border); cursor: pointer; }
+.row:hover { background: var(--row-hover); }
+.row.err { background: var(--err-bg); }
+.row.new { animation: flash 1.2s ease-out; }
+@keyframes flash { from { background: var(--sel); } }
+.row .t { font: 12px var(--mono); color: var(--muted); }
+.chip { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 10px; color: var(--c); background: color-mix(in srgb, var(--c) 14%, transparent); }
+.dur { font: 12px var(--mono); text-align: right; position: relative; }
+.dur i { position: absolute; right: 0; bottom: -3px; height: 2px; border-radius: 1px; background: currentColor; opacity: .45; }
+.d0 { color: var(--ok); } .d1 { color: var(--text); } .d2 { color: var(--warn); } .d3 { color: var(--err); font-weight: 600; }
+.rows { font: 12px var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sql { font: 12px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .emsg { grid-column: 5; color: var(--err); font: 12px var(--mono); }
+.row.sys { cursor: default; color: var(--muted); }
+.row.sys .sql { font-family: var(--sans); font-style: italic; }
+.detail { grid-column: 1 / -1; margin-top: 6px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; cursor: auto; }
+.detail pre { margin: 0 0 8px; font: 12px/1.5 var(--mono); white-space: pre-wrap; word-break: break-word; }
+.detail .kv { display: flex; flex-wrap: wrap; gap: 6px 16px; color: var(--muted); font-size: 12px; align-items: center; }
+.detail .kv b { color: var(--text); font-weight: 500; font-family: var(--mono); }
+.k { color: var(--kw); font-weight: 600; } .s { color: var(--str); } .n { color: var(--num); } .c { color: var(--cmt); font-style: italic; }
+
+table.top { width: 100%; border-collapse: collapse; }
+table.top th { position: sticky; top: 0; background: var(--panel); text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); padding: 8px 12px; border-bottom: 1px solid var(--border); cursor: pointer; white-space: nowrap; }
+table.top th.on { color: var(--text); }
+table.top td { padding: 7px 12px; border-bottom: 1px solid var(--border); font: 12px var(--mono); vertical-align: top; }
+table.top td.num { text-align: right; white-space: nowrap; }
+table.top td.q { max-width: 0; width: 60%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.share { height: 4px; border-radius: 2px; background: var(--accent); opacity: .6; margin-top: 4px; }
+
+.empty { padding: 60px 20px; text-align: center; color: var(--muted); }
+.empty code { font-family: var(--mono); background: var(--panel-2); padding: 2px 6px; border-radius: 4px; }
+.newbar { position: sticky; top: 0; z-index: 2; display: none; text-align: center; padding: 6px; background: var(--accent); color: #fff; cursor: pointer; font-weight: 600; }
+
+@media (max-width: 760px) {
+  main { flex-direction: column; }
+  aside { width: auto; max-height: 34vh; border-right: 0; border-bottom: 1px solid var(--border); }
+  .kpis { display: none; }
+  .row { grid-template-columns: 70px 1fr 64px; }
+  .row .rows, .row .t { display: none; }
+  .row .sql, .row .emsg { grid-column: 1 / -1; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>pg-mcp-tunnel <span>· live queries</span></h1>
+  <span class="live"><span id="conn" class="dot"></span><span id="connText">connecting…</span></span>
+  <div class="kpis">
+    <div class="kpi"><b id="kQps">0</b><small>q/s (10s)</small></div>
+    <div class="kpi"><b id="kTotal">0</b><small>queries</small></div>
+    <div class="kpi"><b id="kErr">0</b><small>errors</small></div>
+    <div class="kpi"><b id="kP95">–</b><small>p95</small></div>
+  </div>
+</header>
+<main>
+  <aside>
+    <h2>Databases</h2>
+    <div id="dbs"></div>
+  </aside>
+  <section>
+    <div class="toolbar">
+      <div class="tabs" id="tabs"><button data-tab="live" class="on">Live</button><button data-tab="top">Top queries</button></div>
+      <input id="q" type="search" placeholder="Filter SQL…  (try: users, pg_catalog, error)">
+      <div class="seg" id="only"><button data-only="all" class="on">All</button><button data-only="err">Errors</button><button data-only="slow">Slow ≥100ms</button></div>
+      <label class="chk"><input id="noise" type="checkbox" checked> Hide BEGIN/COMMIT/SET</label>
+      <label class="chk"><input id="sys" type="checkbox"> Connections</label>
+      <span class="spacer"></span>
+      <button class="btn" id="pause">Pause</button>
+      <button class="btn" id="clear">Clear</button>
+    </div>
+    <div class="view" id="view">
+      <div class="newbar" id="newbar"></div>
+      <div id="list"></div>
+    </div>
+  </section>
+</main>
+<script>
+"use strict";
+const MAX_EVENTS = 5000, MAX_ROWS = 800, SPARK_SECS = 60;
+const PALETTE = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#14b8a6", "#f97316", "#6366f1", "#84cc16"];
+const NOISE = /^\s*(BEGIN|START\s+TRANSACTION|COMMIT|END|ROLLBACK|SET|RESET|SHOW|DISCARD|DEALLOCATE|SAVEPOINT|RELEASE)\b/i;
+
+const $ = (id) => document.getElementById(id);
+const state = {
+  events: [], seq: 0, targets: new Map(), status: new Map(),
+  filter: { target: null, text: "", only: "all", noise: true, sys: false },
+  tab: "live", paused: false, held: [], expanded: new Set(), pending: [], top: { sort: "total" },
+};
+
+function target(name) {
+  let t = state.targets.get(name);
+  if (!t) {
+    t = { name, count: 0, errors: 0, durs: [], conns: new Set(), buckets: new Map(), color: colorFor(name) };
+    state.targets.set(name, t);
+  }
+  return t;
+}
+function colorFor(name) {
+  let h = 0;
+  for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return PALETTE[h % PALETTE.length];
+}
+
+// ---------- ingest ----------
+function ingest(ev) {
+  if (ev.kind === "status") { applyStatus(ev.targets); return; }
+  const t = target(ev.target);
+  const key = ev.pid + ":" + ev.conn;
+  switch (ev.kind) {
+    case "connect": t.conns.add(key); break;
+    case "disconnect": t.conns.delete(key); break;
+    case "start": case "stop":
+      for (const k of [...t.conns]) if (k.startsWith(ev.pid + ":")) t.conns.delete(k);
+      break;
+    case "query": case "error": {
+      t.count++;
+      if (ev.error) t.errors++;
+      if (ev.kind === "query") { t.durs.push(ev.duration_ms || 0); if (t.durs.length > 500) t.durs.shift(); }
+      const sec = Math.floor(Date.parse(ev.ts) / 1000);
+      t.buckets.set(sec, (t.buckets.get(sec) || 0) + 1);
+      break;
+    }
+  }
+  if (ev.kind === "start" || ev.kind === "stop" || ev.kind === "opaque") {
+    if (ev.kind === "opaque") ev.sysText = "connection #" + ev.conn + " switched to TLS: queries not visible";
+    else ev.sysText = ev.kind === "start" ? "tunnel started (pid " + ev.pid + ")" : "tunnel stopped (pid " + ev.pid + ")";
+  } else if (ev.kind === "connect") {
+    ev.sysText = "connection #" + ev.conn + " opened · db=" + ev.db + " user=" + ev.user + (ev.app ? " app=" + ev.app : "");
+  } else if (ev.kind === "disconnect") {
+    ev.sysText = "connection #" + ev.conn + " closed";
+  } else if (ev.kind === "error") {
+    ev.sysText = "server error";
+  }
+  ev.id = state.seq++;
+  ev.time = new Date(ev.ts);
+  state.events.push(ev);
+  if (state.events.length > MAX_EVENTS) state.events.splice(0, state.events.length - MAX_EVENTS);
+  if (state.paused) state.held.push(ev); else state.pending.push(ev);
+}
+
+function applyStatus(list) {
+  state.status = new Map(list.map((s) => [s.name, s]));
+  for (const s of list) {
+    const t = target(s.name);
+    const alive = new Set((s.pids || []).map(String));
+    for (const k of [...t.conns]) if (!alive.has(k.split(":")[0])) t.conns.delete(k);
+  }
+  scheduleSidebar();
+}
+
+// ---------- filtering ----------
+function matches(ev) {
+  const f = state.filter;
+  if (f.target && ev.target !== f.target) return false;
+  const isQuery = ev.kind === "query" || ev.kind === "error";
+  if (!isQuery) return f.sys && !f.text && f.only === "all";
+  if (f.only === "err" && !ev.error) return false;
+  if (f.only === "slow" && !(ev.duration_ms >= 100)) return false;
+  if (f.noise && !ev.error && ev.sql && NOISE.test(ev.sql)) return false;
+  if (f.text) {
+    const hay = ((ev.sql || "") + " " + (ev.error || "") + " " + (ev.tag || "")).toLowerCase();
+    if (!hay.includes(f.text)) return false;
+  }
+  return true;
+}
+
+// ---------- rendering: live ----------
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const KW = "SELECT|FROM|WHERE|AND|OR|NOT|IN|IS|NULL|AS|ON|JOIN|LEFT|RIGHT|INNER|OUTER|FULL|CROSS|LATERAL|GROUP|BY|ORDER|HAVING|LIMIT|OFFSET|INSERT|INTO|VALUES|UPDATE|SET|DELETE|RETURNING|WITH|RECURSIVE|UNION|ALL|DISTINCT|CASE|WHEN|THEN|ELSE|END|EXISTS|BETWEEN|LIKE|ILIKE|ASC|DESC|CREATE|ALTER|DROP|TABLE|INDEX|VIEW|BEGIN|COMMIT|ROLLBACK|TRANSACTION|READ|ONLY|EXPLAIN|ANALYZE|VERBOSE|BUFFERS|FORMAT|COUNT|SUM|AVG|MIN|MAX|COALESCE|CAST|OVER|PARTITION|FILTER|TRUE|FALSE|INTERVAL|NOW|ANY|SHOW|DISTINCT|USING|NULLS|FIRST|LAST";
+const TOKEN = new RegExp("(--[^\\n]*|/\\*[\\s\\S]*?\\*/)|('(?:[^']|'')*'?)|(\\$\\d+|\\b\\d+(?:\\.\\d+)?\\b)|\\b(" + KW + ")\\b", "gi");
+function highlight(sql) {
+  let out = "", last = 0, m;
+  TOKEN.lastIndex = 0;
+  while ((m = TOKEN.exec(sql))) {
+    out += esc(sql.slice(last, m.index));
+    const cls = m[1] ? "c" : m[2] ? "s" : m[3] ? "n" : "k";
+    out += '<span class="' + cls + '">' + esc(m[0]) + "</span>";
+    last = TOKEN.lastIndex;
+  }
+  return out + esc(sql.slice(last));
+}
+const oneLine = (s) => s.replace(/\s+/g, " ").trim();
+// Leading comments (e.g. postgres-mcp's "/* crystaldba */") are noise in one-line previews.
+const preview = (s) => oneLine(s).replace(/^(?:\/\*[\s\S]*?\*\/\s*|--[^\n]*\n\s*)+/, "");
+const fmtTime = (d) => d.toLocaleTimeString([], { hour12: false }) + "." + String(d.getMilliseconds()).padStart(3, "0");
+function fmtMs(ms) {
+  if (ms == null) return "";
+  if (ms < 1) return ms.toFixed(2) + "ms";
+  if (ms < 100) return ms.toFixed(1) + "ms";
+  if (ms < 10000) return Math.round(ms) + "ms";
+  return (ms / 1000).toFixed(1) + "s";
+}
+const durClass = (ms) => (ms < 10 ? "d0" : ms < 100 ? "d1" : ms < 1000 ? "d2" : "d3");
+const durBar = (ms) => Math.max(2, Math.min(78, (Math.log10(Math.max(ms, 0.1)) + 1) * 15));
+
+function rowHTML(ev, fresh) {
+  const t = target(ev.target);
+  const chip = '<span class="chip" style="--c:' + t.color + '">' + esc(ev.target) + "</span>";
+  if (ev.sysText && ev.kind !== "error") {
+    return '<div class="row sys" data-id="' + ev.id + '"><span class="t">' + fmtTime(ev.time) + "</span>" + chip +
+      '<span></span><span></span><span class="sql">' + esc(ev.sysText) + "</span></div>";
+  }
+  const sql = ev.sql ? preview(ev.sql) : ev.sysText;
+  const rows = ev.error ? (ev.sqlstate || "error") : (ev.tag ? (ev.rows && !/^(SELECT|INSERT|UPDATE|DELETE|MERGE|COPY|FETCH|MOVE)\b/.test(ev.tag) ? ev.rows + " rows" : ev.tag) : "");
+  let h = '<div class="row' + (ev.error ? " err" : "") + (fresh ? " new" : "") + '" data-id="' + ev.id + '">' +
+    '<span class="t">' + fmtTime(ev.time) + "</span>" + chip +
+    '<span class="dur ' + durClass(ev.duration_ms || 0) + '">' + fmtMs(ev.duration_ms) +
+    (ev.duration_ms != null ? '<i style="width:' + durBar(ev.duration_ms) + 'px"></i>' : "") + "</span>" +
+    '<span class="rows" title="' + esc(ev.tag || "") + '">' + esc(rows) + "</span>" +
+    '<span class="sql">' + highlight(sql) + "</span>";
+  if (ev.error) h += '<span class="emsg">✕ ' + esc(ev.error) + "</span>";
+  if (state.expanded.has(ev.id)) h += detailHTML(ev);
+  return h + "</div>";
+}
+
+function detailHTML(ev) {
+  const kv = (k, v) => (v ? "<span>" + k + " <b>" + esc(v) + "</b></span>" : "");
+  return '<div class="detail"><pre>' + highlight(ev.sql || "") + '</pre><div class="kv">' +
+    kv("db", ev.db) + kv("user", ev.user) + kv("conn", "#" + ev.conn) + kv("pid", ev.pid) +
+    kv("tag", ev.tag) + kv("rows", ev.rows ? String(ev.rows) : "") + kv("duration", fmtMs(ev.duration_ms)) +
+    kv("sqlstate", ev.sqlstate) + kv("at", ev.time.toLocaleString()) +
+    '<span class="spacer"></span><button class="btn" data-copy="' + ev.id + '">Copy SQL</button></div></div>';
+}
+
+function emptyHTML() {
+  if (state.events.length) return '<div class="empty">Nothing matches the current filters.</div>';
+  return '<div class="empty">No queries yet.<br><br>Every <code>pg-mcp-tunnel --target …</code> process records its traffic;<br>ask Claude something about a database and watch it show up here.</div>';
+}
+
+function renderLive() {
+  const list = $("list");
+  const out = [];
+  for (let i = state.events.length - 1; i >= 0 && out.length < MAX_ROWS; i--) {
+    const ev = state.events[i];
+    if (matches(ev)) out.push(rowHTML(ev, false));
+  }
+  list.innerHTML = out.length ? out.join("") : emptyHTML();
+}
+
+function flushPending() {
+  if (!state.pending.length) return;
+  const evs = state.pending; state.pending = [];
+  if (state.tab !== "live") return;
+  const list = $("list");
+  if (list.querySelector(".empty")) list.innerHTML = "";
+  const html = [];
+  for (let i = evs.length - 1; i >= 0; i--) if (matches(evs[i])) html.push(rowHTML(evs[i], evs.length < 50));
+  if (!html.length) { if (!list.children.length) list.innerHTML = emptyHTML(); return; }
+  list.insertAdjacentHTML("afterbegin", html.join(""));
+  while (list.children.length > MAX_ROWS) list.lastElementChild.remove();
+}
+
+// ---------- rendering: top queries ----------
+function fingerprint(sql) {
+  return preview(sql)
+    .replace(/'(?:[^']|'')*'/g, "?")
+    .replace(/\$\d+/g, "?")
+    .replace(/\b\d+(?:\.\d+)?\b/g, "?")
+    .replace(/\(\s*\?(?:\s*,\s*\?)+\s*\)/g, "(?, …)")
+    .replace(/\bIN\s*\(\?\)/gi, "IN (?, …)");
+}
+function renderTop() {
+  const groups = new Map();
+  let grand = 0;
+  for (const ev of state.events) {
+    if (ev.kind !== "query" || !ev.sql || !matches(ev)) continue;
+    const fp = fingerprint(ev.sql);
+    let g = groups.get(fp);
+    if (!g) groups.set(fp, (g = { fp, count: 0, total: 0, max: 0, errors: 0, rows: 0, targets: new Set(), sample: ev }));
+    g.count++; g.total += ev.duration_ms || 0; g.max = Math.max(g.max, ev.duration_ms || 0);
+    g.rows += ev.rows || 0; if (ev.error) g.errors++; g.targets.add(ev.target);
+    grand += ev.duration_ms || 0;
+  }
+  const key = state.top.sort;
+  const arr = [...groups.values()].sort((a, b) =>
+    key === "avg" ? b.total / b.count - a.total / a.count : key === "count" ? b.count - a.count : key === "max" ? b.max - a.max : b.total - a.total
+  ).slice(0, 100);
+  if (!arr.length) { $("list").innerHTML = emptyHTML(); return; }
+  const th = (k, label) => '<th data-sort="' + k + '" class="' + (key === k ? "on" : "") + '">' + label + (key === k ? " ↓" : "") + "</th>";
+  let h = '<table class="top"><thead><tr><th>Query</th><th>DB</th>' + th("count", "Calls") + th("total", "Total") + th("avg", "Avg") + th("max", "Max") + "<th>Rows</th></tr></thead><tbody>";
+  for (const g of arr) {
+    const chips = [...g.targets].map((n) => '<span class="chip" style="--c:' + target(n).color + '">' + esc(n) + "</span>").join(" ");
+    h += '<tr><td class="q" title="' + esc(g.fp) + '">' + highlight(g.fp) +
+      '<div class="share" style="width:' + (grand ? (100 * g.total / grand).toFixed(1) : 0) + '%"></div></td>' +
+      "<td>" + chips + '</td><td class="num">' + g.count + (g.errors ? ' <span class="d3">(' + g.errors + "✕)</span>" : "") +
+      '</td><td class="num">' + fmtMs(g.total) + '</td><td class="num ' + durClass(g.total / g.count) + '">' + fmtMs(g.total / g.count) +
+      '</td><td class="num ' + durClass(g.max) + '">' + fmtMs(g.max) + '</td><td class="num">' + g.rows + "</td></tr>";
+  }
+  $("list").innerHTML = h + "</tbody></table>";
+}
+
+// ---------- rendering: sidebar + KPIs ----------
+function p95(arr) {
+  if (!arr.length) return null;
+  const s = [...arr].sort((a, b) => a - b);
+  return s[Math.min(s.length - 1, Math.floor(s.length * 0.95))];
+}
+function spark(t, nowSec) {
+  const vals = [];
+  for (let s = nowSec - SPARK_SECS + 1; s <= nowSec; s++) vals.push(t.buckets.get(s) || 0);
+  for (const s of t.buckets.keys()) if (s < nowSec - SPARK_SECS * 2) t.buckets.delete(s);
+  const max = Math.max(1, ...vals), w = 240, h = 22, bw = w / SPARK_SECS;
+  let bars = "";
+  vals.forEach((v, i) => {
+    if (!v) return;
+    const bh = Math.max(2, (v / max) * h);
+    bars += '<rect x="' + (i * bw).toFixed(1) + '" y="' + (h - bh).toFixed(1) + '" width="' + (bw - 1).toFixed(1) + '" height="' + bh.toFixed(1) + '" rx="1"/>';
+  });
+  return '<svg viewBox="0 0 ' + w + " " + h + '" preserveAspectRatio="none" fill="' + t.color + '"><rect x="0" y="' + (h - 1) + '" width="' + w + '" height="1" fill="var(--border)"/>' + bars + "</svg>";
+}
+function renderSidebar() {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const names = new Set([...state.status.keys(), ...state.targets.keys()]);
+  const sorted = [...names].sort();
+  let total = 0, errors = 0, recent = 0; const allDurs = [];
+  let h = '<div class="db' + (state.filter.target ? "" : " active") + '" data-target=""><div class="top"><span class="dot on"></span><span class="name">All databases</span></div></div>';
+  for (const name of sorted) {
+    const t = target(name), st = state.status.get(name);
+    total += t.count; errors += t.errors; allDurs.push(...t.durs);
+    for (let s = nowSec - 9; s <= nowSec; s++) recent += t.buckets.get(s) || 0;
+    const avg = t.durs.length ? t.durs.reduce((a, b) => a + b, 0) / t.durs.length : null;
+    h += '<div class="db' + (state.filter.target === name ? " active" : "") + '" data-target="' + esc(name) + '" style="--c:' + t.color + '">' +
+      '<div class="top"><span class="dot' + (st && st.alive ? " on" : "") + '" title="' + (st && st.alive ? "tunnel running (pid " + st.pids.join(", ") + ")" : "no running tunnel") + '"></span>' +
+      '<span class="name" style="color:' + t.color + '">' + esc(name) + '</span><span class="count">' + t.count + "</span></div>" +
+      '<div class="meta"><span title="open connections">⇄ ' + t.conns.size + "</span>" +
+      '<span title="average duration">avg ' + (avg == null ? "–" : fmtMs(avg)) + "</span>" +
+      '<span title="95th percentile">p95 ' + (t.durs.length ? fmtMs(p95(t.durs)) : "–") + "</span>" +
+      (t.errors ? '<span class="e">' + t.errors + " ✕</span>" : "") + "</div>" + spark(t, nowSec) + "</div>";
+  }
+  $("dbs").innerHTML = h;
+  $("kQps").textContent = (recent / 10).toFixed(1);
+  $("kTotal").textContent = total;
+  $("kErr").textContent = errors;
+  $("kP95").textContent = allDurs.length ? fmtMs(p95(allDurs)) : "–";
+}
+
+// ---------- scheduling ----------
+let frame = 0, sidebarDirty = true, topDirty = false;
+function scheduleSidebar() { sidebarDirty = true; tick(); }
+function tick() {
+  if (frame) return;
+  frame = requestAnimationFrame(() => {
+    frame = 0;
+    if (state.pending.length) { sidebarDirty = true; topDirty = true; }
+    flushPending();
+    if (sidebarDirty) { sidebarDirty = false; renderSidebar(); }
+  });
+}
+setInterval(() => { sidebarDirty = true; tick(); }, 1000); // keep sparklines scrolling
+setInterval(() => { if (state.tab === "top" && topDirty) { topDirty = false; renderTop(); } }, 1000);
+
+function rerender() { state.tab === "live" ? renderLive() : renderTop(); renderSidebar(); }
+
+// ---------- events from server ----------
+let everOpen = false;
+function connect() {
+  const es = new EventSource("events");
+  es.onopen = () => {
+    if (everOpen) { // server replays its backlog on every connect
+      state.events = []; state.targets.clear(); state.pending = []; state.held = [];
+      rerender();
+    }
+    everOpen = true;
+    $("conn").className = "dot on pulse"; $("connText").textContent = "live";
+  };
+  es.onerror = () => { $("conn").className = "dot"; $("connText").textContent = "reconnecting…"; };
+  let first = true;
+  es.onmessage = (m) => {
+    try { ingest(JSON.parse(m.data)); } catch (e) { return; }
+    if (first) { first = false; setTimeout(() => { state.pending = []; rerender(); }, 0); return; }
+    tick();
+  };
+}
+
+// ---------- UI wiring ----------
+$("dbs").addEventListener("click", (e) => {
+  const el = e.target.closest(".db"); if (!el) return;
+  state.filter.target = el.dataset.target || null; rerender();
+});
+$("q").addEventListener("input", (e) => { state.filter.text = e.target.value.trim().toLowerCase(); rerender(); });
+$("noise").addEventListener("change", (e) => { state.filter.noise = e.target.checked; rerender(); });
+$("sys").addEventListener("change", (e) => { state.filter.sys = e.target.checked; rerender(); });
+$("only").addEventListener("click", (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  state.filter.only = b.dataset.only;
+  for (const x of $("only").children) x.classList.toggle("on", x === b);
+  rerender();
+});
+$("tabs").addEventListener("click", (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  state.tab = b.dataset.tab; state.pending = [];
+  for (const x of $("tabs").children) x.classList.toggle("on", x === b);
+  rerender();
+});
+$("pause").addEventListener("click", () => {
+  state.paused = !state.paused;
+  $("pause").textContent = state.paused ? "Resume" : "Pause";
+  $("pause").classList.toggle("hot", state.paused);
+  if (!state.paused) { state.pending.push(...state.held); state.held = []; $("newbar").style.display = "none"; tick(); }
+});
+setInterval(() => {
+  const n = state.held.filter(matches).length;
+  $("newbar").style.display = state.paused && n ? "block" : "none";
+  $("newbar").textContent = n + " new — click to resume";
+}, 500);
+$("newbar").addEventListener("click", () => $("pause").click());
+$("clear").addEventListener("click", () => {
+  state.events = []; state.held = []; state.pending = []; state.expanded.clear();
+  for (const t of state.targets.values()) { t.count = 0; t.errors = 0; t.durs = []; t.buckets.clear(); }
+  rerender();
+});
+$("list").addEventListener("click", (e) => {
+  const copy = e.target.closest("[data-copy]");
+  if (copy) {
+    const ev = state.events.find((x) => x.id === +copy.dataset.copy);
+    if (ev) navigator.clipboard.writeText(ev.sql || "").then(() => { copy.textContent = "Copied ✓"; });
+    return;
+  }
+  const sort = e.target.closest("th[data-sort]");
+  if (sort) { state.top.sort = sort.dataset.sort; renderTop(); return; }
+  if (e.target.closest(".detail")) return;
+  const row = e.target.closest(".row:not(.sys)"); if (!row) return;
+  const id = +row.dataset.id, ev = state.events.find((x) => x.id === id);
+  if (!ev) return;
+  if (state.expanded.has(id)) state.expanded.delete(id); else state.expanded.add(id);
+  row.outerHTML = rowHTML(ev, false);
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "/" && document.activeElement !== $("q")) { e.preventDefault(); $("q").focus(); }
+  if (e.key === " " && document.activeElement === document.body) { e.preventDefault(); $("pause").click(); }
+});
+
+connect();
+</script>
+</body>
+</html>

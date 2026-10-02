@@ -87,6 +87,21 @@ In `.mcp.json`:
 }
 ```
 
+## Live query dashboard
+
+Every `pg-mcp-tunnel --target X` process observes the Postgres wire protocol flowing through its relay and appends one JSON line per query to `~/.cache/pg-mcp-tunnel/X.queries.jsonl` (SQL, duration, command tag, row count, error / SQLSTATE, connection open/close). This includes the queries postgres-mcp issues on its own (`BEGIN TRANSACTION READ ONLY`, health checks, catalog introspection).
+
+```bash
+pg-mcp-tunnel ui --open        # http://localhost:7878
+```
+
+The dashboard tails all targets' files and shows, per database: live stream, running tunnel / open connections, q/s sparkline, avg/p95, errors, plus a *Top queries* view grouped by normalized SQL (sort by calls, total, avg, max). Keyboard: `/` to filter, `space` to pause.
+
+Notes:
+- Observation needs plaintext between postgres-mcp and the relay: SSH targets always go through the relay; direct targets are relayed only when their URI has `sslmode=disable` (otherwise they connect directly as before). Connections that negotiate TLS are shown as opaque.
+- Recorded files contain SQL text (possibly with literal values), are `0600`, and are capped at 20 MiB. Disable with `--record-queries=false`.
+- The UI only answers requests addressed to `localhost`/`127.0.0.1` (DNS-rebinding guard).
+
 ## License
 
 MIT

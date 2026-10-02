@@ -137,3 +137,41 @@ targets:
 		})
 	}
 }
+
+func TestDirectAddrAndRelayURI(t *testing.T) {
+	cases := []struct {
+		uri      string
+		wantAddr string // "" = not relayable
+	}{
+		{"postgresql://u:p@localhost:5432/db?sslmode=disable", "localhost:5432"},
+		{"postgres://u@db.internal/db?sslmode=disable", "db.internal:5432"},
+		{"postgresql://u@[::1]:6543/db?sslmode=disable", "[::1]:6543"},
+		{"postgresql://u@localhost/db", ""},                       // default sslmode=prefer
+		{"postgresql://u@localhost/db?sslmode=verify-full", ""},   // TLS
+		{"postgresql:///db?sslmode=disable", ""},                  // unix socket
+		{"postgresql://u@/db?host=/tmp&sslmode=disable", ""},      // unix socket
+		{"postgresql://u@h1:5432,h2:5432/db?sslmode=disable", ""}, // multi-host
+		{"host=localhost dbname=db sslmode=disable", ""},          // keyword DSN
+	}
+	for _, c := range cases {
+		tg := &Target{Postgres: PostgresConfig{URI: c.uri}}
+		addr, err := tg.DirectAddr()
+		if c.wantAddr == "" {
+			if err == nil {
+				t.Errorf("%s: want not relayable, got %q", c.uri, addr)
+			}
+			continue
+		}
+		if err != nil || addr != c.wantAddr {
+			t.Errorf("%s: got %q, %v; want %q", c.uri, addr, err, c.wantAddr)
+		}
+	}
+
+	tg := &Target{Postgres: PostgresConfig{URI: "postgresql://u:p%40ss@localhost:5432/db?sslmode=disable"}}
+	if got, want := tg.BuildURI(4242), "postgresql://u:p%40ss@127.0.0.1:4242/db?sslmode=disable"; got != want {
+		t.Errorf("BuildURI(4242) = %q, want %q", got, want)
+	}
+	if got := tg.BuildURI(0); got != tg.Postgres.URI {
+		t.Errorf("BuildURI(0) = %q, want original", got)
+	}
+}

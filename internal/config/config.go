@@ -1,10 +1,13 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -93,12 +96,54 @@ func (t *Target) Mode() string {
 	return t.AccessMode
 }
 
+// DirectAddr returns the host:port of a direct (non-SSH) target so
+// pg-mcp-tunnel can relay, and observe, its connections. Only plaintext
+// (sslmode=disable) single-host TCP URIs qualify: TLS traffic can't be
+// observed anyway, and rewriting the host would break verify-full.
+func (t *Target) DirectAddr() (string, error) {
+	if t.SSH != nil {
+		return "", errors.New("target uses ssh")
+	}
+	u, err := url.Parse(t.Postgres.URI)
+	if err != nil {
+		return "", err
+	}
+	if u.Scheme != "postgres" && u.Scheme != "postgresql" {
+		return "", fmt.Errorf("unsupported scheme %q", u.Scheme)
+	}
+	q := u.Query()
+	if q.Get("sslmode") != "disable" {
+		return "", errors.New("sslmode is not disable")
+	}
+	if q.Has("host") || q.Has("hostaddr") || q.Has("port") {
+		return "", errors.New("host/port given as query parameters")
+	}
+	host := u.Hostname()
+	if host == "" || strings.Contains(u.Host, ",") {
+		return "", errors.New("not a single TCP host")
+	}
+	port := u.Port()
+	if port == "" {
+		port = "5432"
+	}
+	return net.JoinHostPort(host, port), nil
+}
+
 // BuildURI returns the DATABASE_URI to pass to postgres-mcp.
 // If the target uses SSH, localPort must be the port of the established tunnel.
-// Otherwise localPort is ignored and the configured URI is returned as-is.
+// For a direct target, localPort is the port of a local relay (see
+// DirectAddr), or 0 to return the configured URI as-is.
 func (t *Target) BuildURI(localPort int) string {
 	if t.SSH == nil {
-		return t.Postgres.URI
+		if localPort == 0 {
+			return t.Postgres.URI
+		}
+		u, err := url.Parse(t.Postgres.URI)
+		if err != nil {
+			return t.Postgres.URI
+		}
+		u.Host = "127.0.0.1:" + strconv.Itoa(localPort)
+		return u.String()
 	}
 	u := url.URL{
 		Scheme: "postgresql",

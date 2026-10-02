@@ -14,7 +14,9 @@ import (
 
 	"github.com/ulule/pg-mcp-tunnel/internal/config"
 	"github.com/ulule/pg-mcp-tunnel/internal/proxy"
+	"github.com/ulule/pg-mcp-tunnel/internal/querylog"
 	"github.com/ulule/pg-mcp-tunnel/internal/sshtunnel"
+	"github.com/ulule/pg-mcp-tunnel/internal/tcpproxy"
 )
 
 const (
@@ -22,6 +24,13 @@ const (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "ui" {
+		if err := runUI(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "pg-mcp-tunnel ui:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "pg-mcp-tunnel:", err)
 		os.Exit(exitCode(err))
@@ -33,6 +42,7 @@ func run() error {
 		target     = flag.String("target", "", "target name from config (required)")
 		configPath = flag.String("config", defaultConfigPath(), "path to config.yaml")
 		logPath    = flag.String("log-file", "", "path to log file (default ~/.cache/pg-mcp-tunnel/<target>.log)")
+		record     = flag.Bool("record-queries", true, "record observed SQL to ~/.cache/pg-mcp-tunnel/<target>"+querylog.FileSuffix+" for `pg-mcp-tunnel ui`")
 	)
 	flag.Parse()
 
@@ -66,6 +76,18 @@ func run() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	var tap tcpproxy.TapFactory
+	if *record {
+		rec, err := openRecorder(*target)
+		if err != nil {
+			// Observability is best-effort: never refuse to start over it.
+			logger.Warn("query recording disabled", "err", err)
+		} else {
+			defer rec.Close()
+			tap = func() tcpproxy.Tap { return rec.NewSniffer() }
+		}
+	}
+
 	var (
 		uri       string
 		tunnelRef *sshtunnel.Tunnel
@@ -75,6 +97,7 @@ func run() error {
 			Host: tg.SSH.Host,
 			User: tg.SSH.User,
 			Port: tg.SSH.Port,
+			Tap:  tap,
 		}, fmt.Sprintf("%s:%d", tg.Postgres.RemoteHost, tg.Postgres.RemotePort), logger, logFile)
 		if err != nil {
 			return fmt.Errorf("open ssh tunnel: %w", err)
@@ -97,6 +120,19 @@ func run() error {
 		}()
 	} else {
 		uri = tg.BuildURI(0)
+		if tap != nil {
+			// Relay direct connections through a local port so they can be
+			// observed too. Targets that can't be relayed safely connect
+			// directly, as before.
+			if addr, err := tg.DirectAddr(); err != nil {
+				logger.Info("direct target not relayed, queries won't be recorded", "reason", err)
+			} else if relay, err := tcpproxy.Listen(addr, tap, logger); err != nil {
+				logger.Warn("open local relay failed, connecting directly", "err", err)
+			} else {
+				defer relay.Close()
+				uri = tg.BuildURI(relay.LocalPort())
+			}
+		}
 	}
 
 	argv := []string{"uv", "run", "postgres-mcp", "--access-mode=" + tg.Mode()}
@@ -128,6 +164,23 @@ func run() error {
 	return nil
 }
 
+func cacheDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(home, ".cache", "pg-mcp-tunnel")
+	return dir, os.MkdirAll(dir, 0o700)
+}
+
+func openRecorder(target string) (*querylog.Recorder, error) {
+	dir, err := cacheDir()
+	if err != nil {
+		return nil, err
+	}
+	return querylog.OpenRecorder(filepath.Join(dir, target+querylog.FileSuffix), target)
+}
+
 func defaultConfigPath() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -139,12 +192,8 @@ func defaultConfigPath() string {
 func openLogFile(custom, target string) (*os.File, error) {
 	path := custom
 	if path == "" {
-		home, err := os.UserHomeDir()
+		dir, err := cacheDir()
 		if err != nil {
-			return nil, err
-		}
-		dir := filepath.Join(home, ".cache", "pg-mcp-tunnel")
-		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, err
 		}
 		path = filepath.Join(dir, target+".log")

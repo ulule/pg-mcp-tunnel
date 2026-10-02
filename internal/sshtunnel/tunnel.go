@@ -28,6 +28,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/ulule/pg-mcp-tunnel/internal/tcpproxy"
 )
 
 // shepherdScript wraps an arbitrary command in a shell that watches a "lifeline"
@@ -72,6 +74,9 @@ type Config struct {
 	Host string
 	User string // optional
 	Port int    // optional, ssh's default applies otherwise
+
+	// Tap, if set, observes the bytes of every proxied connection.
+	Tap tcpproxy.TapFactory
 }
 
 type Tunnel struct {
@@ -80,6 +85,7 @@ type Tunnel struct {
 	sshPort   int // internal port ssh -L binds to
 	listener  net.Listener
 	logger    *slog.Logger
+	tap       tcpproxy.TapFactory
 
 	// lifelineW is the write end of the lifeline pipe inherited by the shepherd.
 	// We keep it open for the lifetime of this process; the OS closes it on any
@@ -180,6 +186,7 @@ func Open(ctx context.Context, cfg Config, remoteAddr string, logger *slog.Logge
 		sshPort:    sshPort,
 		listener:   listener,
 		logger:     logger,
+		tap:        cfg.Tap,
 		lifelineW:  lifelineW,
 		stderrRing: stderrRing,
 		sshReady:   make(chan struct{}),
@@ -321,10 +328,11 @@ func (t *Tunnel) handleConn(client net.Conn) {
 	}
 	defer upstream.Close()
 
-	done := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(upstream, client); done <- struct{}{} }()
-	go func() { _, _ = io.Copy(client, upstream); done <- struct{}{} }()
-	<-done
+	var tap tcpproxy.Tap
+	if t.tap != nil {
+		tap = t.tap()
+	}
+	tcpproxy.Pipe(client, upstream, tap)
 }
 
 func (t *Tunnel) Close() error {
