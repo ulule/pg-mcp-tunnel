@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>pg-mcp-tunnel · live queries</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj48Y2lyY2xlIGN4PSI1MCIgY3k9IjUwIiByPSI0NyIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMzhiZGY4IiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1kYXNoYXJyYXk9IjUgMyIvPjxjaXJjbGUgY3g9IjUwIiBjeT0iNTAiIHI9IjQzIiBmaWxsPSIjMGIxMTIwIi8+PHBhdGggZD0iTTI2IDM4QzE2IDQyIDE2IDYwIDI3IDY0QzI5IDY1IDMxIDYzIDMxIDYwWiIgZmlsbD0iIzFlMjkzYiIgc3Ryb2tlPSIjMzhiZGY4IiBzdHJva2Utd2lkdGg9IjAuOCIvPjxwYXRoIGQ9Ik03NCAzOEM4NCA0MiA4NCA2MCA3MyA2NEM3MSA2NSA2OSA2MyA2OSA2MFoiIGZpbGw9IiMxZTI5M2IiIHN0cm9rZT0iIzM4YmRmOCIgc3Ryb2tlLXdpZHRoPSIwLjgiLz48cGF0aCBkPSJNMzEgMjhDMjggMjAgMzcgMjEgNDEgMjdDNDQgMjYgNTYgMjYgNTkgMjdDNjMgMjEgNzIgMjAgNjkgMjhDNzggMzcgNzcgNjQgNjggNzNDNjAgODEgNDAgODEgMzIgNzNDMjMgNjQgMjIgMzcgMzEgMjhaIiBmaWxsPSIjMWUyOTNiIiBzdHJva2U9IiMzOGJkZjgiIHN0cm9rZS13aWR0aD0iMS4yIi8+PHBhdGggZD0iTTQ2IDYwQzQ2IDczIDQzIDc5IDUwIDgyQzU2IDg0IDU5IDc4IDU2IDczQzUzIDY5IDUzIDY1IDU0IDYwWiIgZmlsbD0iIzFlMjkzYiIgc3Ryb2tlPSIjMzhiZGY4Ii8+PHBhdGggZD0iTTU0IDcwQzYxIDcyIDYxIDY3IDU5IDY1QzU4IDY4IDU2IDY5IDU0IDcwWiIgZmlsbD0iI2Y4ZmFmYyIvPjxjaXJjbGUgY3g9IjM5IiBjeT0iNDYiIHI9IjEyLjUiIGZpbGw9IiNmZmYiLz48Y2lyY2xlIGN4PSI2MSIgY3k9IjQ2IiByPSIxMi41IiBmaWxsPSIjZmZmIi8+PGVsbGlwc2UgY3g9IjUwIiBjeT0iNDYiIHJ4PSIxLjYiIHJ5PSIzLjgiIGZpbGw9IiMwZjE3MmEiLz48Y2lyY2xlIGN4PSI0MCIgY3k9IjQ2IiByPSI3LjgiIGZpbGw9IiMwMjg0YzciLz48Y2lyY2xlIGN4PSI0MSIgY3k9IjQ2LjUiIHI9IjQuMiIgZmlsbD0iIzBjNGE2ZSIvPjxjaXJjbGUgY3g9IjM4IiBjeT0iNDMiIHI9IjIuMiIgZmlsbD0iI2ZmZiIvPjxjaXJjbGUgY3g9IjYwIiBjeT0iNDYiIHI9IjcuOCIgZmlsbD0iI2UxMWQ0OCIvPjxjaXJjbGUgY3g9IjU5IiBjeT0iNDYuNSIgcj0iNC4yIiBmaWxsPSIjNGMwNTE5Ii8+PGNpcmNsZSBjeD0iNTgiIGN5PSI0MyIgcj0iMi4yIiBmaWxsPSIjZmZmIi8+PC9zdmc+">
 <style>
 :root {
   --bg: #f6f7f9; --panel: #ffffff; --panel-2: #f0f2f5; --border: #e2e5ea;
@@ -28,6 +29,8 @@ html, body { margin: 0; height: 100%; }
 body { background: var(--bg); color: var(--text); font: 13px/1.45 var(--sans); display: flex; flex-direction: column; }
 
 header { display: flex; align-items: center; gap: 16px; padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--panel); }
+.brand { display: inline-flex; align-items: center; gap: 9px; }
+.brand svg.logo { width: 22px; height: 22px; flex: none; }
 header h1 { font-size: 14px; margin: 0; font-weight: 600; letter-spacing: .2px; white-space: nowrap; }
 header h1 span { color: var(--muted); font-weight: 400; }
 .live { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
@@ -113,7 +116,50 @@ table.top td.q { max-width: 0; width: 60%; white-space: nowrap; overflow: hidden
 </head>
 <body>
 <header>
-  <h1>pg-mcp-tunnel <span>· live queries</span></h1>
+  <div class="brand">
+    <svg class="logo" viewBox="0 0 100 100" aria-label="pg-mcp-tunnel logo">
+      <defs>
+        <linearGradient id="portalGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="#38bdf8"/>
+          <stop offset="50%" stop-color="#0284c7"/>
+          <stop offset="100%" stop-color="#0369a1"/>
+        </linearGradient>
+        <linearGradient id="pgSlate" x1="0%" y1="0%" x2="0%" y2="100%">
+          <stop offset="0%" stop-color="#1e293b"/>
+          <stop offset="100%" stop-color="#0f172a"/>
+        </linearGradient>
+        <radialGradient id="cyanEye" cx="35%" cy="35%" r="65%">
+          <stop offset="0%" stop-color="#7dd3fc"/>
+          <stop offset="50%" stop-color="#0284c7"/>
+          <stop offset="100%" stop-color="#0369a1"/>
+        </radialGradient>
+        <radialGradient id="redEye" cx="35%" cy="35%" r="65%">
+          <stop offset="0%" stop-color="#fda4af"/>
+          <stop offset="50%" stop-color="#e11d48"/>
+          <stop offset="100%" stop-color="#9f1239"/>
+        </radialGradient>
+      </defs>
+      <circle cx="50" cy="50" r="47" fill="none" stroke="url(#portalGrad)" stroke-width="2" stroke-dasharray="5 3" opacity="0.8"/>
+      <circle cx="50" cy="50" r="43" fill="#0b1120" stroke="#1e293b" stroke-width="1"/>
+      <circle cx="50" cy="50" r="39" fill="none" stroke="#38bdf8" stroke-width="0.8" opacity="0.35"/>
+      <path d="M 26 38 C 16 42 16 60 27 64 C 29 65 31 63 31 60 Z" fill="#1e293b" stroke="#38bdf8" stroke-width="0.8" opacity="0.8"/>
+      <path d="M 74 38 C 84 42 84 60 73 64 C 71 65 69 63 69 60 Z" fill="#1e293b" stroke="#38bdf8" stroke-width="0.8" opacity="0.8"/>
+      <path d="M 31 28 C 28 20 37 21 41 27 C 44 26 56 26 59 27 C 63 21 72 20 69 28 C 78 37 77 64 68 73 C 60 81 40 81 32 73 C 23 64 22 37 31 28 Z" fill="url(#pgSlate)" stroke="#38bdf8" stroke-width="1.2"/>
+      <path d="M 46 60 C 46 73 43 79 50 82 C 56 84 59 78 56 73 C 53 69 53 65 54 60 Z" fill="#1e293b" stroke="#38bdf8" stroke-width="1"/>
+      <path d="M 54 70 C 61 72 61 67 59 65 C 58 68 56 69 54 70 Z" fill="#f8fafc"/>
+      <circle cx="39" cy="46" r="12.5" fill="#ffffff" stroke="#0f172a" stroke-width="1.2"/>
+      <circle cx="61" cy="46" r="12.5" fill="#ffffff" stroke="#0f172a" stroke-width="1.2"/>
+      <ellipse cx="50" cy="46" rx="1.6" ry="3.8" fill="#0f172a"/>
+      <circle cx="40" cy="46" r="7.8" fill="url(#cyanEye)"/>
+      <circle cx="41" cy="46.5" r="4.2" fill="#0c4a6e"/>
+      <circle cx="38" cy="43" r="2.2" fill="#ffffff"/>
+      <circle cx="60" cy="46" r="7.8" fill="url(#redEye)"/>
+      <circle cx="59" cy="46.5" r="4.2" fill="#4c0519"/>
+      <circle cx="58" cy="43" r="2.2" fill="#ffffff"/>
+      <circle cx="51" cy="80" r="1.2" fill="#38bdf8"/>
+    </svg>
+    <h1>pg-mcp-tunnel <span>· live queries</span></h1>
+  </div>
   <span class="live"><span id="conn" class="dot"></span><span id="connText">connecting…</span></span>
   <div class="kpis">
     <div class="kpi"><b id="kQps">0</b><small>q/s (10s)</small></div>

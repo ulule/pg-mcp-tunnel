@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="pg-mcp-tunnel logo" width="130" height="130" />
+</p>
+
 # pg-mcp-tunnel
 
 A small Go binary that wraps [`crystaldba/postgres-mcp`](https://github.com/crystaldba/postgres-mcp) and adds in-process SSH tunneling.
