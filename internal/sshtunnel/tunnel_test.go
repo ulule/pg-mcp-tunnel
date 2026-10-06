@@ -2,12 +2,13 @@ package sshtunnel
 
 import (
 	"context"
-	"errors"
 	"io"
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -123,52 +124,11 @@ func TestOpenReturnsImmediatelyAndListens(t *testing.T) {
 	}
 }
 
-// TestMarkFailedClosesListenerAndChannel verifies the core failure-detection
-// primitive: markFailed closes the Failed() channel, captures the reason,
-// closes the listener, and is idempotent (sync.Once).
-func TestMarkFailedClosesListenerAndChannel(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	tun := &Tunnel{
-		listener:   listener,
-		stderrRing: newRingBuffer(64, nil),
-		failedCh:   make(chan struct{}),
-	}
-
-	tun.markFailed(errors.New("boom"))
-
-	select {
-	case <-tun.Failed():
-	case <-time.After(time.Second):
-		t.Fatal("Failed() channel was not closed")
-	}
-	if tun.FailReason() == nil || tun.FailReason().Error() != "boom" {
-		t.Errorf("FailReason = %v, want 'boom'", tun.FailReason())
-	}
-	// Listener should be closed (Accept returns an error immediately).
-	if c, err := listener.Accept(); err == nil {
-		_ = c.Close()
-		t.Error("listener still accepting after markFailed")
-	}
-
-	// Second call is a no-op (does not panic, does not overwrite reason).
-	tun.markFailed(errors.New("different"))
-	if tun.FailReason().Error() != "boom" {
-		t.Errorf("FailReason changed after second markFailed: %v", tun.FailReason())
-	}
-}
-
-// TestOpenFailsWhenShepherdChildExitsImmediately exercises the real Open()
+// TestOpenReportsFailureWhenSSHExitsImmediately exercises the real Open()
 // path with a configuration that causes ssh to fail fast (port 1 = closed),
-// and verifies that Failed() fires within a few seconds and FailReason()
-// surfaces something useful — without needing a real SSH server.
-//
-// ssh's own connect to 127.0.0.1:1 returns ECONNREFUSED in milliseconds; with
-// ExitOnForwardFailure=yes it exits non-zero almost immediately, the shepherd
-// follows, doneCh closes, and the cmd.Wait goroutine calls markFailed.
-func TestOpenFailsWhenShepherdChildExitsImmediately(t *testing.T) {
+// and verifies that FailReason() surfaces something useful within a few
+// seconds — without needing a real SSH server.
+func TestOpenReportsFailureWhenSSHExitsImmediately(t *testing.T) {
 	cfg := Config{Host: "127.0.0.1", User: "nobody", Port: 1}
 	tun, err := Open(context.Background(),
 		cfg,
@@ -181,15 +141,169 @@ func TestOpenFailsWhenShepherdChildExitsImmediately(t *testing.T) {
 	}
 	defer tun.Close()
 
-	select {
-	case <-tun.Failed():
-	case <-time.After(10 * time.Second):
-		t.Fatal("Failed() did not fire within 10s after ssh exited")
-	}
-	if tun.FailReason() == nil {
-		t.Error("FailReason() is nil after Failed() fired")
+	deadline := time.Now().Add(10 * time.Second)
+	for tun.FailReason() == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("FailReason() still nil 10s after ssh exited")
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 	t.Logf("FailReason: %v", tun.FailReason())
+
+	// Within the cooldown, a new connection is refused without relaunching ssh.
+	tun.mu.Lock()
+	before := tun.cur
+	tun.mu.Unlock()
+	if _, err := tun.session(); err == nil {
+		t.Error("session() succeeded during redial cooldown")
+	}
+	tun.mu.Lock()
+	after := tun.cur
+	tun.mu.Unlock()
+	if before != after {
+		t.Error("ssh relaunched during redial cooldown")
+	}
+}
+
+// TestRedialAfterSSHDrop simulates a dropped link: the fake ssh is killed
+// after the tunnel is up, and the next connection must go through a freshly
+// launched ssh on the same local port.
+func TestRedialAfterSSHDrop(t *testing.T) {
+	installFakeSSH(t)
+	remote := startEchoServer(t)
+
+	tun, err := Open(context.Background(), Config{Host: "fake"}, remote,
+		slog.New(slog.NewTextHandler(io.Discard, nil)), io.Discard)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer tun.Close()
+
+	echo(t, tun.LocalPort(), "first")
+
+	tun.mu.Lock()
+	first := tun.cur
+	tun.mu.Unlock()
+	_ = syscall.Kill(-first.shepherd.Process.Pid, syscall.SIGKILL)
+
+	select {
+	case <-tun.Drops():
+	case <-time.After(5 * time.Second):
+		t.Fatal("Drops() not signaled after ssh died")
+	}
+	if tun.FailReason() == nil {
+		t.Error("FailReason() nil while the tunnel is down")
+	}
+
+	echo(t, tun.LocalPort(), "second")
+	if tun.FailReason() != nil {
+		t.Errorf("FailReason() = %v after redial, want nil", tun.FailReason())
+	}
+	tun.mu.Lock()
+	second := tun.cur
+	tun.mu.Unlock()
+	if second == first {
+		t.Error("connection reused the dead ssh session")
+	}
+}
+
+// echo sends msg through the tunnel's local port and checks it comes back.
+func echo(t *testing.T, port int, msg string) {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", "127.0.0.1:"+strconv.Itoa(port), time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	if _, err := conn.Write([]byte(msg)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	buf := make([]byte, len(msg))
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		t.Fatalf("read %q back: %v", msg, err)
+	}
+	if string(buf) != msg {
+		t.Fatalf("got %q, want %q", buf, msg)
+	}
+}
+
+func startEchoServer(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				_, _ = io.Copy(c, c)
+			}()
+		}
+	}()
+	return l.Addr().String()
+}
+
+// installFakeSSH puts an `ssh` first in PATH that runs this test binary as a
+// plain TCP forwarder for its -L argument (see TestMain).
+func installFakeSSH(t *testing.T) {
+	t.Helper()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	script := "#!/bin/sh\nPGMCP_FAKE_SSH=1 exec " + strconv.Quote(self) + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestMain(m *testing.M) {
+	if os.Getenv("PGMCP_FAKE_SSH") == "1" {
+		fakeSSH(os.Args[1:])
+		return
+	}
+	os.Exit(m.Run())
+}
+
+// fakeSSH honors "-L 127.0.0.1:port:host:hostport" by forwarding that local
+// port to host:hostport, and runs until killed.
+func fakeSSH(args []string) {
+	var bind, remote string
+	for i, a := range args {
+		if a == "-L" && i+1 < len(args) {
+			parts := strings.SplitN(args[i+1], ":", 3) // 127.0.0.1, port, host:hostport
+			bind, remote = parts[0]+":"+parts[1], parts[2]
+		}
+	}
+	l, err := net.Listen("tcp", bind)
+	if err != nil {
+		os.Exit(255)
+	}
+	for {
+		c, err := l.Accept()
+		if err != nil {
+			os.Exit(255)
+		}
+		go func() {
+			defer c.Close()
+			up, err := net.Dial("tcp", remote)
+			if err != nil {
+				return
+			}
+			defer up.Close()
+			go func() { _, _ = io.Copy(up, c) }()
+			_, _ = io.Copy(c, up)
+		}()
+	}
 }
 
 // TestShepherdSurvivesParentProcessExitSimulation is a slightly heavier check

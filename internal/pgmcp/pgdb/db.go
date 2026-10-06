@@ -31,7 +31,7 @@ type Querier interface {
 type Options struct {
 	URI        string
 	Restricted bool
-	// TunnelErr reports a permanent ssh tunnel failure; nil means healthy.
+	// TunnelErr reports why the ssh tunnel is down; nil means healthy.
 	TunnelErr func() error
 }
 
@@ -69,6 +69,9 @@ func Open(opts Options) (*DB, error) {
 }
 
 func (db *DB) Close() { db.pool.Close() }
+
+// Reset closes every pooled connection; checked-out ones close on release.
+func (db *DB) Reset() { db.pool.Reset() }
 
 func (db *DB) Restricted() bool { return db.restricted }
 
@@ -130,11 +133,8 @@ func (db *DB) Tx(ctx context.Context, fn func(q Querier) error) error {
 }
 
 func (db *DB) withConn(ctx context.Context, fn func(c *pgconn.PgConn) error) error {
-	if db.tunnelErr != nil {
-		if err := db.tunnelErr(); err != nil {
-			return fmt.Errorf("ssh tunnel failed: %w", err)
-		}
-	}
+	// No early check of tunnelErr: a down tunnel is redialed by the connect
+	// below, and only reported if that fails too.
 	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
 		if db.tunnelErr != nil {

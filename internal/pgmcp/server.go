@@ -32,8 +32,8 @@ type Options struct {
 	// ExtraFunctions extends the restricted-mode function allowlist.
 	ExtraFunctions []string
 	Logger         *slog.Logger
-	// TunnelErr reports a permanent ssh tunnel failure; nil when healthy or
-	// for direct targets.
+	// TunnelErr reports why the ssh tunnel is down; nil when healthy or for
+	// direct targets.
 	TunnelErr func() error
 	// OnToolCall, if set, is called after every tool call (e.g. to record it
 	// for the web UI).
@@ -124,3 +124,7 @@ func (s *Server) Run(ctx context.Context, t mcp.Transport) error {
 }
 
 func (s *Server) Close() { s.db.Close() }
+
+// ResetConns closes the pooled connections, e.g. after the ssh tunnel they
+// went through dropped; the next tool call opens fresh ones.
+func (s *Server) ResetConns() { s.db.Reset() }

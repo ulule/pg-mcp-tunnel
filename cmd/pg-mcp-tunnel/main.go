@@ -109,17 +109,6 @@ func run() error {
 		tunnelRef = t
 		uri = tg.BuildURI(t.LocalPort())
 
-		// If the tunnel permanently fails (ssh died, or never came up), keep
-		// serving: every tool call then answers "ssh tunnel failed: <reason>",
-		// which the model can read, instead of a bare "Server disconnected".
-		go func() {
-			select {
-			case <-t.Failed():
-				logger.Error("ssh tunnel failed", "err", t.FailReason())
-				fmt.Fprintln(os.Stderr, "pg-mcp-tunnel: ssh tunnel failed:", t.FailReason())
-			case <-ctx.Done():
-			}
-		}()
 	} else {
 		uri = tg.BuildURI(0)
 		if tap != nil {
@@ -153,6 +142,22 @@ func run() error {
 		return err
 	}
 	defer srv.Close()
+
+	if tunnelRef != nil {
+		// Connections opened through a dropped ssh session are dead but look
+		// idle-healthy to the pool: drop them so the next tool call reconnects
+		// (and redials ssh) instead of failing once on a closed socket.
+		go func() {
+			for {
+				select {
+				case <-tunnelRef.Drops():
+					srv.ResetConns()
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
 
 	logger.Info("serving MCP on stdio", "mode", tg.Mode(), "uri_host_only", maskURI(uri))
 	if err := srv.Run(ctx, &mcp.StdioTransport{}); err != nil {

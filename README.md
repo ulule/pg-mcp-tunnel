@@ -170,6 +170,7 @@ Claude ──stdio──▶ pg-mcp-tunnel (serveur MCP + pool pgx)
 - **Démarrage immédiat.** Le port local est ouvert en quelques millisecondes et le serveur MCP répond tout de suite ; ssh se connecte en parallèle. Les premières connexions attendent simplement que le tunnel soit prêt (jusqu'à 30 s).
 - **Pas de processus ssh orphelin.** ssh tourne sous un petit shell qui surveille un pipe : si pg-mcp-tunnel s'arrête (normalement, crash, `kill -9`, Claude quitté brutalement), ssh est arrêté aussi.
 - **Erreurs SSH visibles.** Si ssh échoue ou ne monte pas en 30 s, la fin de sa sortie d'erreur est conservée. Le serveur reste actif et chaque appel d'outil répond `Error: ssh tunnel failed: <raison>`, que Claude peut lire.
+- **Reconnexion automatique.** Si le lien tombe (veille, changement de Wi-Fi ou de VPN, timeout du bastion), l'appel d'outil suivant relance ssh sur le même port local. Pas besoin de reconnecter le serveur MCP. Après un échec de connexion, ssh n'est pas relancé pendant 5 s.
 
 ## Migration depuis la version Python
 
@@ -204,7 +205,7 @@ codesign -s - -f "$(which pg-mcp-tunnel)"
 tail -50 ~/.cache/pg-mcp-tunnel/<cible>.log
 ```
 
-**`ssh tunnel failed: …`.** Tester la connexion à la main avec `ssh <user>@<host>` : clé absente de l'agent, VPN, `~/.ssh/config`…
+**`ssh tunnel failed: …`.** Le tunnel est relancé à chaque appel : si l'erreur persiste, tester la connexion à la main avec `ssh <user>@<host>` : clé absente de l'agent, VPN, `~/.ssh/config`…
 
 **`function … is not allowed in restricted mode`.** La fonction n'est pas dans la liste blanche. Si elle est en lecture seule, l'ajouter à `allowed_functions` dans la cible, puis redémarrer Claude.
 
