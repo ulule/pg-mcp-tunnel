@@ -134,8 +134,8 @@ func TestFilterQueryRoundTrip(t *testing.T) {
 func TestFingerprint(t *testing.T) {
 	for in, want := range map[string]string{
 		"/* app */ SELECT * FROM t WHERE id = 42 AND name = 'bob'": "SELECT * FROM t WHERE id = ? AND name = ?",
-		"select 1 from t where id in (1, 2, 3)":                           "select ? from t where id in (?, …)",
-		"select * from t where id IN ($1)":                                "select * from t where id IN (?, …)",
+		"select 1 from t where id in (1, 2, 3)":                    "select ? from t where id in (?, …)",
+		"select * from t where id IN ($1)":                         "select * from t where id IN (?, …)",
 	} {
 		if got := fingerprint(in); got != want {
 			t.Errorf("fingerprint(%q) = %q, want %q", in, got, want)

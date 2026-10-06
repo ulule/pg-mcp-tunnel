@@ -101,8 +101,7 @@ func (v *Validator) check(n any) error {
 	switch n := n.(type) {
 	case *pgq.A_Expr:
 		if n.GetKind() == pgq.A_Expr_Kind_AEXPR_LIKE || n.GetKind() == pgq.A_Expr_Kind_AEXPR_ILIKE {
-			c := n.GetRexpr().GetAConst()
-			if c == nil || c.GetSval() == nil {
+			if !constLikePattern(n.GetRexpr()) {
 				return errors.New("LIKE pattern must be a constant string")
 			}
 		}
@@ -136,6 +135,31 @@ func (v *Validator) check(n any) error {
 		}
 	}
 	return nil
+}
+
+// constLikePattern reports whether a LIKE/ILIKE right operand is a constant
+// string, or "'pat' ESCAPE 'c'", which the grammar turns into
+// pg_catalog.like_escape('pat', 'c').
+func constLikePattern(n *pgq.Node) bool {
+	isStr := func(n *pgq.Node) bool { return n.GetAConst().GetSval() != nil }
+	if isStr(n) {
+		return true
+	}
+	fc := n.GetFuncCall()
+	if fc == nil {
+		return false
+	}
+	names := fc.GetFuncname()
+	if len(names) != 2 || names[0].GetString_().GetSval() != "pg_catalog" ||
+		names[1].GetString_().GetSval() != "like_escape" || len(fc.GetArgs()) != 2 {
+		return false
+	}
+	for _, a := range fc.GetArgs() {
+		if !isStr(a) {
+			return false
+		}
+	}
+	return true
 }
 
 // normalizeFunc lowercases a function name and strips a pg_catalog. prefix.

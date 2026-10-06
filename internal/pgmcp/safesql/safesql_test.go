@@ -32,6 +32,16 @@ func TestValidate(t *testing.T) {
 		"SELECT unaccent(name) FROM users",
 		"CREATE EXTENSION IF NOT EXISTS hypopg",
 		"SELECT hypopg_reset()",
+		// SQL-standard syntax the grammar rewrites into pg_catalog function calls.
+		"SELECT now() AT TIME ZONE 'Europe/Paris'",
+		"SELECT now() AT LOCAL",
+		"SELECT (date '2026-01-01', date '2026-02-01') OVERLAPS (date '2026-01-15', date '2026-03-01')",
+		"SELECT 'abc' SIMILAR TO 'a%'",
+		`SELECT substring('abc' similar 'a#"b#"c' escape '#')`,
+		"SELECT * FROM t WHERE a LIKE 'x#%' ESCAPE '#'",
+		"SELECT * FROM t WHERE a ILIKE 'x#%' ESCAPE '#'",
+		"SELECT 'abc' IS NORMALIZED, COLLATION FOR ('x')",
+		"SELECT date_bin('15 minutes', now(), timestamp '2000-01-01')",
 	}
 	for _, sql := range allowed {
 		if err := v.Validate(sql); err != nil {
@@ -64,6 +74,8 @@ func TestValidate(t *testing.T) {
 		"SELECT * INTO new_t FROM t":                            "node type IntoClause",
 		"WITH x AS (DELETE FROM t RETURNING *) SELECT * FROM x": "node type DeleteStmt",
 		"SELECT * FROM t WHERE a LIKE b":                        "LIKE pattern",
+		"SELECT * FROM t WHERE a LIKE b ESCAPE '#'":             "LIKE pattern",
+		"SELECT * FROM t WHERE a LIKE 'x' ESCAPE b":             "LIKE pattern",
 		"CREATE EXTENSION plpython3u":                           "CREATE EXTENSION plpython3u",
 		"SELEC 1":                                               "Failed to parse",
 		"":                                                      "empty",
@@ -91,6 +103,21 @@ func TestCheckIndexDefinition(t *testing.T) {
 	} {
 		if err := CheckIndexDefinition(def); err == nil {
 			t.Errorf("CheckIndexDefinition(%q) = nil, want error", def)
+		}
+	}
+}
+
+// The grammar turns SQL-standard syntax (AT TIME ZONE, OVERLAPS, SIMILAR TO,
+// TRIM, ...) into pg_catalog function calls: SystemFuncName(...) in
+// src/backend/parser/gram.y. They are all read-only and must stay allowed.
+func TestGrammarFunctionsAllowed(t *testing.T) {
+	for _, name := range []string{
+		"btrim", "extract", "is_normalized", "json_object", "like_escape", "ltrim",
+		"normalize", "overlaps", "overlay", "pg_collation_for", "position", "rtrim",
+		"similar_to_escape", "substring", "system_user", "timezone", "xmlexists",
+	} {
+		if _, ok := allowedFunctions[name]; !ok {
+			t.Errorf("%s is emitted by the grammar but missing from allowedFunctions", name)
 		}
 	}
 }

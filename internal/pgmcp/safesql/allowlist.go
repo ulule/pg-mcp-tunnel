@@ -162,6 +162,15 @@ var allowedFunctions = set(
 	"upper",
 	"unistr",
 	"unicode_assigned",
+	// Emitted by the grammar for SQL-standard syntax (gram.y SystemFuncName):
+	// AT TIME ZONE / AT LOCAL, OVERLAPS, SIMILAR TO, LIKE ... ESCAPE,
+	// IS NORMALIZED, COLLATION FOR.
+	"timezone",
+	"overlaps",
+	"similar_to_escape",
+	"like_escape",
+	"is_normalized",
+	"pg_collation_for",
 	// Pattern matching functions
 	"regexp_match",
 	"regexp_matches",
@@ -352,6 +361,7 @@ var allowedFunctions = set(
 	"current_date",
 	"current_time",
 	"current_timestamp",
+	"date_bin",
 	"date_part",
 	"date_trunc",
 	"extract",
