@@ -29,6 +29,9 @@ var configPage = template.Must(template.New("config").Parse(`<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>pg-mcp-tunnel · config</title>
+<link rel="icon" type="image/png" href="static/logo.png">
+<script src="static/htmx-2.0.11.min.js"></script>
+<script src="static/app.js" defer></script>
 <style>
 :root { --bg: #f6f7f9; --panel: #fff; --border: #e2e5ea; --text: #1b1f24; --muted: #6a7280; --accent: #3b6fd8; --ok: #1f8a4c; --err: #c53030;
   --mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace; --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
@@ -53,22 +56,13 @@ pre { background: var(--panel); border: 1px solid var(--border); border-radius: 
   <h1>config.yaml</h1>
   <div class="path">{{.Path}}</div>
   <div class="bar">
-    <button class="btn" id="open">Open in editor</button>
-    <button class="btn" id="copy">Copy path</button>
+    <button class="btn" hx-post="config/open" hx-target="#msg" hx-swap="outerHTML">Open in editor</button>
+    <button class="btn" data-copy="{{.Path}}" data-copied="Path copied ✓">Copy path</button>
     <span id="msg"></span>
   </div>
   {{if .Err}}<pre>{{.Err}}</pre>{{else}}<pre>{{.Content}}</pre>
   <div class="note">Passwords are masked. Edit the file itself; running tunnels pick up changes when Claude restarts them.</div>{{end}}
 </main>
-<script>
-const msg = (text, cls) => { const m = document.getElementById("msg"); m.textContent = text; m.className = cls || ""; };
-document.getElementById("copy").onclick = () =>
-  navigator.clipboard.writeText({{.Path}}).then(() => msg("Path copied ✓", "ok"));
-document.getElementById("open").onclick = async () => {
-  const r = await fetch("config/open", { method: "POST" });
-  r.ok ? msg("Opened ✓", "ok") : msg(await r.text(), "err");
-};
-</script>
 </body>
 </html>`))
 
@@ -85,21 +79,23 @@ func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {
 	_ = configPage.Execute(w, data)
 }
 
-// handleOpenConfig opens the config file in the desktop's default editor.
+var openResult = template.Must(template.New("msg").Parse(`<span id="msg" class="{{if .}}err{{else}}ok{{end}}">{{if .}}{{.}}{{else}}Opened ✓{{end}}</span>`))
+
+// handleOpenConfig opens the config file in the desktop's default editor and
+// answers the #msg fragment.
 func (s *Server) handleOpenConfig(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r) {
 		http.Error(w, "cross-origin request refused", http.StatusForbidden)
 		return
 	}
+	var msg string
 	if _, err := os.Stat(s.configPath); err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
+		msg = err.Error()
+	} else if err := openInEditor(s.configPath); err != nil {
+		msg = err.Error()
 	}
-	if err := openInEditor(s.configPath); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = openResult.Execute(w, msg)
 }
 
 // sameOrigin guards state-changing requests: localOnly checks the Host

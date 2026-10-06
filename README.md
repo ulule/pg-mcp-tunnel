@@ -123,6 +123,7 @@ Notes:
 - Observation needs plaintext between the pool and the relay: SSH targets always go through the relay; direct targets are relayed only when their URI has `sslmode=disable` (otherwise they connect directly as before). Connections that negotiate TLS are shown as opaque.
 - Recorded files contain SQL text (possibly with literal values), are `0600`, and are capped at 20 MiB. Disable with `--record-queries=false`.
 - The UI only answers requests addressed to `localhost`/`127.0.0.1` (DNS-rebinding guard).
+- The UI is rendered server-side with [htmx](https://htmx.org) (vendored in the binary, no CDN): filters live in the URL, so a reload or a bookmark restores the view; new rows are pushed over SSE.
 
 ## License
 

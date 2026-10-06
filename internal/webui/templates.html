@@ -1,0 +1,177 @@
+{{define "page"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pg-mcp-tunnel · live queries</title>
+<link rel="icon" type="image/png" href="static/logo.png">
+<link rel="stylesheet" href="static/app.css">
+<script src="static/htmx-2.0.11.min.js"></script>
+<script src="static/htmx-ext-sse-2.2.4.min.js"></script>
+<script src="static/app.js" defer></script>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <img class="logo" src="static/logo.png" alt="">
+    <h1>pg-mcp-tunnel <span>· live queries</span></h1>
+  </div>
+  <span class="live"><span id="conn" class="dot"></span><span id="connText">connecting…</span></span>
+  <a class="cfg" href="config" title="View the targets config (passwords masked) and open it in your editor">⚙ config.yaml</a>
+  {{template "kpis" .Sidebar}}
+</header>
+<main>
+  <aside id="sidebar" hx-get="sidebar" hx-include="#filters" hx-trigger="every 1s" hx-swap="innerHTML">
+    {{template "sidebar" .Sidebar}}
+  </aside>
+  <section>
+    {{template "toolbar" .Filter}}
+    {{template "view" .View}}
+  </section>
+</main>
+</body>
+</html>{{end}}
+
+{{define "toolbar"}}
+<form id="filters" class="toolbar" hx-get="view" hx-target="#view" hx-swap="outerHTML"
+      hx-trigger="input changed delay:250ms from:#q, change" onsubmit="return false">
+  <input type="hidden" name="target" value="{{.Target}}">
+  <input type="hidden" name="tab" value="{{.Tab}}">
+  <input type="hidden" name="sort" value="{{.Sort}}">
+  <input type="hidden" name="only" value="{{.Only}}">
+  <input type="hidden" name="paused" value="{{if .Paused}}1{{else}}0{{end}}">
+  <div class="tabs">
+    <button type="button" data-set="tab" data-value="live" {{if eq .Tab "live"}}class="on"{{end}}>Live</button><button type="button" data-set="tab" data-value="top" {{if eq .Tab "top"}}class="on"{{end}}>Top queries</button>
+  </div>
+  <input id="q" name="q" type="search" value="{{.Q}}" placeholder="Filter SQL…  (try: users, pg_catalog, error)" autocomplete="off">
+  <div class="seg">
+    <button type="button" data-set="only" data-value="all" {{if eq .Only "all"}}class="on"{{end}}>All</button><button type="button" data-set="only" data-value="err" {{if eq .Only "err"}}class="on"{{end}}>Errors</button><button type="button" data-set="only" data-value="slow" {{if eq .Only "slow"}}class="on"{{end}}>Slow ≥100ms</button>
+  </div>
+  <label class="chk"><input type="hidden" name="noise" value="0"><input type="checkbox" name="noise" value="1" {{if .Noise}}checked{{end}}> Hide BEGIN/COMMIT/SET</label>
+  <label class="chk" title="MCP tool calls with the estimated tokens they cost"><input type="hidden" name="tools" value="0"><input type="checkbox" name="tools" value="1" {{if .Tools}}checked{{end}}> MCP calls</label>
+  <label class="chk"><input type="hidden" name="sys" value="0"><input type="checkbox" name="sys" value="1" {{if .Sys}}checked{{end}}> Connections</label>
+  <span class="spacer"></span>
+  <button type="button" class="btn{{if .Paused}} hot{{end}}" id="pause">{{if .Paused}}Resume{{else}}Pause{{end}}</button>
+  <button type="button" class="btn" hx-post="clear" hx-include="#filters" hx-target="#view" hx-swap="outerHTML">Clear</button>
+</form>
+{{end}}
+
+{{define "kpis"}}
+<div class="kpis" id="kpis">
+  <div class="kpi"><b>{{.KPI.QPS}}</b><small>q/s (10s)</small></div>
+  <div class="kpi"><b>{{.KPI.Total}}</b><small>queries</small></div>
+  <div class="kpi"><b>{{.KPI.Errors}}</b><small>errors</small></div>
+  <div class="kpi"><b>{{.KPI.P95}}</b><small>p95</small></div>
+  <div class="kpi" title="Estimated tokens of the MCP answers sent to the model (~3.5 chars/token)"><b>{{fmtTok .KPI.Tokens}}</b><small>tokens (est.)</small></div>
+</div>
+{{end}}
+
+{{define "sidebar"}}
+<h2>Databases</h2>
+<div class="db{{if .AllActive}} active{{end}}" data-set="target" data-value=""><div class="top"><span class="dot on"></span><span class="name">All databases</span></div></div>
+{{range .DBs}}
+<div class="db{{if .Active}} active{{end}}" data-set="target" data-value="{{.Name}}" style="--c:{{.Color}}">
+  <div class="top">
+    <span class="dot{{if .Alive}} on{{end}}" title="{{if .Alive}}tunnel running (pid {{.PIDs}}){{else}}no running tunnel{{end}}"></span>
+    <span class="name" style="color:{{.Color}}">{{.Name}}</span><span class="count">{{.Count}}</span>
+  </div>
+  <div class="meta">
+    <span title="open connections">⇄ {{.Conns}}</span>
+    <span title="average duration">avg {{.Avg}}</span>
+    <span title="95th percentile">p95 {{.P95}}</span>
+    {{if .Calls}}<span class="{{tokClass .Tokens}}" title="{{.Calls}} MCP calls, ≈ {{.Tokens}} tokens">≈ {{fmtTok .Tokens}} tok</span>{{end}}
+    {{if .Errors}}<span class="e">{{.Errors}} ✕</span>{{end}}
+  </div>
+  {{.Spark}}
+</div>
+{{end}}
+{{end}}
+
+{{define "sidebar-oob"}}
+{{template "sidebar" .}}
+<div hx-swap-oob="outerHTML:#kpis">{{template "kpis" .}}</div>
+{{end}}
+
+{{define "view"}}{{if eq .Tab "top"}}{{template "top" .}}{{else}}{{template "live" .}}{{end}}{{end}}
+
+{{define "live"}}
+<div id="view" class="view">
+  {{if .Paused}}
+  <div class="newbar" hx-get="{{withSince "pending" .Query .LastID}}" hx-trigger="every 1s" hx-swap="outerHTML"></div>
+  {{else}}
+  <div hx-ext="sse" sse-connect="{{withSince "stream" .Query .LastID}}" sse-swap="row" hx-target="#list" hx-swap="afterbegin">
+    <div hx-trigger="sse:reset" hx-get="view" hx-include="#filters" hx-target="#view" hx-swap="outerHTML"></div>
+  </div>
+  {{end}}
+  <div id="list">
+    {{range .Rows}}{{template "row" .}}{{end}}
+    {{template "empty" .Empty}}
+  </div>
+</div>
+{{end}}
+
+{{define "newbar"}}
+<div class="newbar"{{if .N}} style="display:block" data-set="paused" data-value="0"{{end}} hx-get="{{withSince "pending" .Query .Since}}" hx-trigger="every 1s" hx-swap="outerHTML">{{.N}} new — click to resume</div>
+{{end}}
+
+{{define "empty"}}
+{{if eq . "no-events"}}<div class="empty">No queries yet.<br><br>Every <code>pg-mcp-tunnel --target …</code> process records its traffic;<br>ask Claude something about a database and watch it show up here.</div>
+{{else}}<div class="empty">Nothing matches the current filters.</div>{{end}}
+{{end}}
+
+{{define "row"}}{{$ev := .Ev}}
+{{- if isSys $ev}}
+<div class="row sys"><span class="t">{{fmtTime $ev.Time}}</span><span class="chip" style="--c:{{color $ev.Target}}">{{$ev.Target}}</span><span></span><span></span><span class="sql">{{$ev.SysText}}</span></div>
+{{- else}}
+<div class="row{{if isTool $ev}} tool{{end}}{{if $ev.Error}} err{{end}}{{if .Fresh}} new{{end}}" hx-get="event/{{$ev.ID}}{{if not .Expanded}}?open=1{{end}}" hx-trigger="click[!target.closest('.detail')]" hx-swap="outerHTML">
+  <span class="t">{{fmtTime $ev.Time}}</span><span class="chip" style="--c:{{color $ev.Target}}">{{$ev.Target}}</span>
+  {{- if isTool $ev}}{{$tok := tokens $ev}}
+  <span class="dur {{durClass $ev.DurationMS}}">{{fmtMs $ev.DurationMS}}</span>
+  <span class="{{tokClass $tok}}" title="≈ {{$ev.TokensIn}} tokens in (arguments) + {{$ev.Tokens}} tokens out (answer, {{$ev.Bytes}} bytes)">≈ {{fmtTok $tok}} tok</span>
+  <span class="sql"><span class="tname">{{$ev.Tool}}</span>{{if $ev.SQL}}{{highlight (preview $ev.SQL)}}{{end}}</span>
+  {{- else}}
+  <span class="dur {{durClass $ev.DurationMS}}">{{if $ev.DurationMS}}{{fmtMs $ev.DurationMS}}<i style="width:{{durBar $ev.DurationMS}}px"></i>{{end}}</span>
+  <span class="rows" title="{{$ev.Tag}}">{{rowsLabel $ev}}</span>
+  <span class="sql">{{if $ev.SQL}}{{highlight (preview $ev.SQL)}}{{else}}{{$ev.SysText}}{{end}}</span>
+  {{- end}}
+  {{- if $ev.Error}}<span class="emsg">✕ {{$ev.Error}}</span>{{end}}
+  {{- if .Expanded}}
+  <div class="detail"><pre>{{highlight $ev.SQL}}</pre><div class="kv">
+    {{- if isTool $ev}}
+    <span>tool <b>{{$ev.Tool}}</b></span><span>tokens in <b>≈ {{$ev.TokensIn}}</b></span><span>tokens out <b>≈ {{$ev.Tokens}}</b></span><span>answer <b>{{$ev.Bytes}} bytes</b></span>
+    {{- else}}
+    {{if $ev.Database}}<span>db <b>{{$ev.Database}}</b></span>{{end}}{{if $ev.User}}<span>user <b>{{$ev.User}}</b></span>{{end}}<span>conn <b>#{{$ev.Conn}}</b></span><span>pid <b>{{$ev.PID}}</b></span>
+    {{if $ev.Tag}}<span>tag <b>{{$ev.Tag}}</b></span>{{end}}{{if $ev.Rows}}<span>rows <b>{{$ev.Rows}}</b></span>{{end}}{{if $ev.SQLState}}<span>sqlstate <b>{{$ev.SQLState}}</b></span>{{end}}
+    {{- end}}
+    <span>duration <b>{{fmtMs $ev.DurationMS}}</b></span><span>at <b>{{fullTime $ev.Time}}</b></span>
+    <span class="spacer"></span>{{if $ev.SQL}}<button type="button" class="btn" data-copy="{{$ev.SQL}}">Copy SQL</button>{{end}}
+  </div></div>
+  {{- end}}
+</div>
+{{- end}}
+{{end}}
+
+{{define "top"}}
+<div id="view" class="view" hx-get="view?{{.Query}}" hx-trigger="every 2s" hx-swap="outerHTML">
+  {{if .Groups}}
+  <table class="top"><thead><tr><th>Query</th><th>DB</th>
+    {{template "th" (printf "count|Calls|%s" .Sort)}}{{template "th" (printf "total|Total|%s" .Sort)}}{{template "th" (printf "avg|Avg|%s" .Sort)}}{{template "th" (printf "max|Max|%s" .Sort)}}<th>Rows</th>{{template "th" (printf "tokens|Tokens|%s" .Sort)}}
+  </tr></thead><tbody>
+  {{range .Groups}}
+    <tr>
+      <td class="q" title="{{.FP}}">{{highlight .FP}}<div class="share" style="width:{{pct .Share}}%"></div></td>
+      <td>{{range .Targets}}<span class="chip" style="--c:{{color .}}">{{.}}</span> {{end}}</td>
+      <td class="num">{{.Count}}{{if .Errors}} <span class="d3">({{.Errors}}✕)</span>{{end}}</td>
+      <td class="num">{{fmtMs .Total}}</td>
+      <td class="num {{durClass .Avg}}">{{fmtMs .Avg}}</td>
+      <td class="num {{durClass .Max}}">{{fmtMs .Max}}</td>
+      <td class="num">{{.Rows}}</td>
+      <td class="num"><span class="{{tokClass .Tokens}}">{{if .Tokens}}≈ {{fmtTok .Tokens}}{{else}}–{{end}}</span></td>
+    </tr>
+  {{end}}
+  </tbody></table>
+  {{else}}{{template "empty" .Empty}}{{end}}
+</div>
+{{end}}
+
+{{define "th"}}{{$p := split .}}<th data-set="sort" data-value="{{index $p 0}}"{{if eq (index $p 0) (index $p 2)}} class="on"{{end}}>{{index $p 1}}{{if eq (index $p 0) (index $p 2)}} ↓{{end}}</th>{{end}}

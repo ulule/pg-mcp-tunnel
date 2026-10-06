@@ -1,23 +1,25 @@
 // Package webui serves a small live dashboard of the queries recorded by every
 // pg-mcp-tunnel process. Each tunnel process appends events to its own
-// <target>.queries.jsonl file; this server tails all of them and streams the
-// events to the browser over Server-Sent Events.
+// <target>.queries.jsonl file; this server tails all of them, aggregates them
+// and renders HTML fragments that htmx swaps into the page (new rows are
+// pushed over Server-Sent Events).
 package webui
 
 import (
 	"bytes"
 	"context"
-	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -26,16 +28,10 @@ import (
 	"github.com/ulule/pg-mcp-tunnel/internal/querylog"
 )
 
-//go:embed index.html
-var indexHTML []byte
-
 const (
-	pollInterval   = 250 * time.Millisecond
-	statusInterval = 2 * time.Second
-	backlogSize    = 5000
+	pollInterval = 250 * time.Millisecond
 	// On first discovery of a file, only its tail is replayed.
 	initialTail = 2 * 1024 * 1024
-	clientBuf   = 1024
 )
 
 type Server struct {
@@ -43,12 +39,11 @@ type Server struct {
 	targets    []string // configured targets, shown even before any event
 	configPath string
 	logger     *slog.Logger
+	dash       *dash
 
-	mu      sync.Mutex
-	backlog [][]byte
-	clients map[chan []byte]struct{}
-	files   map[string]*tailFile
-	pids    map[string]map[int]struct{} // target -> tunnel pids seen
+	mu    sync.Mutex // guards files and pids
+	files map[string]*tailFile
+	pids  map[string]map[int]struct{} // target -> tunnel pids seen
 }
 
 type tailFile struct {
@@ -57,12 +52,15 @@ type tailFile struct {
 }
 
 func New(dir string, targets []string, configPath string, logger *slog.Logger) *Server {
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
 	return &Server{
 		dir:        dir,
 		targets:    targets,
 		configPath: configPath,
 		logger:     logger,
-		clients:    make(map[chan []byte]struct{}),
+		dash:       newDash(),
 		files:      make(map[string]*tailFile),
 		pids:       make(map[string]map[int]struct{}),
 	}
@@ -70,20 +68,11 @@ func New(dir string, targets []string, configPath string, logger *slog.Logger) *
 
 // Serve polls the events files and serves HTTP on l until ctx is canceled.
 func (s *Server) Serve(ctx context.Context, l net.Listener) error {
-	s.poll() // load backlog before the first client connects
-	s.sortBacklog()
+	s.poll() // load the backlog before the first client connects
+	s.dash.sortByTime()
 	go s.pollLoop(ctx)
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write(indexHTML)
-	})
-	mux.HandleFunc("GET /events", s.handleEvents)
-	mux.HandleFunc("GET /config", s.handleConfig)
-	mux.HandleFunc("POST /config/open", s.handleOpenConfig)
-
-	srv := &http.Server{Handler: localOnly(mux), ReadHeaderTimeout: 5 * time.Second}
+	srv := &http.Server{Handler: localOnly(s.routes()), ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		<-ctx.Done()
 		shutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -94,6 +83,22 @@ func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 		return err
 	}
 	return nil
+}
+
+func (s *Server) routes() http.Handler {
+	mux := http.NewServeMux()
+	static, _ := fs.Sub(staticFS, "static")
+	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(static)))
+	mux.HandleFunc("GET /{$}", s.handlePage)
+	mux.HandleFunc("GET /view", s.handleView)
+	mux.HandleFunc("GET /sidebar", s.handleSidebar)
+	mux.HandleFunc("GET /stream", s.handleStream)
+	mux.HandleFunc("GET /pending", s.handlePending)
+	mux.HandleFunc("GET /event/{id}", s.handleEvent)
+	mux.HandleFunc("POST /clear", s.handleClear)
+	mux.HandleFunc("GET /config", s.handleConfig)
+	mux.HandleFunc("POST /config/open", s.handleOpenConfig)
+	return mux
 }
 
 // localOnly rejects requests whose Host isn't a loopback name, so a malicious
@@ -113,32 +118,131 @@ func localOnly(next http.Handler) http.Handler {
 	})
 }
 
-func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+// ---------- pages and fragments ----------
+
+func (s *Server) render(w http.ResponseWriter, name string, data any) {
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, name, data); err != nil {
+		s.logger.Error("render", "template", name, "err", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write(buf.Bytes())
+}
+
+func (s *Server) viewData(f Filter) any {
+	if f.Tab == "top" {
+		return s.dash.top(f)
+	}
+	return s.dash.live(f)
+}
+
+func (s *Server) handlePage(w http.ResponseWriter, r *http.Request) {
+	f := parseFilter(r)
+	s.render(w, "page", struct {
+		Filter  Filter
+		Sidebar sidebarData
+		View    any
+	}{f, s.dash.sidebar(f, s.targets, s.alivePIDs()), s.viewData(f)})
+}
+
+func (s *Server) handleView(w http.ResponseWriter, r *http.Request) {
+	f := parseFilter(r)
+	// Keep the address bar in sync so a reload restores the view.
+	if q := f.Query(); q != "" {
+		w.Header().Set("HX-Replace-Url", "./?"+q)
+	} else {
+		w.Header().Set("HX-Replace-Url", "./")
+	}
+	s.render(w, "view", s.viewData(f))
+}
+
+func (s *Server) handleSidebar(w http.ResponseWriter, r *http.Request) {
+	s.render(w, "sidebar-oob", s.dash.sidebar(parseFilter(r), s.targets, s.alivePIDs()))
+}
+
+func (s *Server) handlePending(w http.ResponseWriter, r *http.Request) {
+	f := parseFilter(r)
+	since, _ := strconv.ParseUint(r.FormValue("since"), 10, 64)
+	s.render(w, "newbar", struct {
+		N     int
+		Query string
+		Since uint64
+	}{s.dash.pending(f, since), f.Query(), since})
+}
+
+func (s *Server) handleEvent(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseUint(r.PathValue("id"), 10, 64)
+	ev := s.dash.get(id)
+	if ev == nil {
+		http.Error(w, "event no longer buffered", http.StatusNotFound)
+		return
+	}
+	s.render(w, "row", rowData{Ev: ev, Expanded: r.FormValue("open") == "1"})
+}
+
+func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r) {
+		http.Error(w, "cross-origin request refused", http.StatusForbidden)
+		return
+	}
+	s.dash.clear()
+	s.render(w, "view", s.viewData(parseFilter(r)))
+}
+
+// handleStream pushes rendered rows matching the filter over SSE: first the
+// buffered ones newer than "since" (or the Last-Event-ID the browser sends
+// when it reconnects), then live ones.
+func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 		return
 	}
+	f := parseFilter(r)
+	since, _ := strconv.ParseUint(r.FormValue("since"), 10, 64)
+	stale := false
+	if last := r.Header.Get("Last-Event-ID"); last != "" {
+		if id, ok := s.dash.parseSSEID(last); ok {
+			since = id
+		} else {
+			stale = true // ids from a previous ui process
+		}
+	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 
-	ch := make(chan []byte, clientBuf)
-	s.mu.Lock()
-	backlog := append([][]byte(nil), s.backlog...)
-	s.clients[ch] = struct{}{}
-	s.mu.Unlock()
-	defer func() {
-		s.mu.Lock()
-		delete(s.clients, ch)
-		s.mu.Unlock()
-	}()
+	ch := s.dash.subscribe()
+	defer s.dash.unsubscribe(ch)
 
 	var buf bytes.Buffer
-	for _, line := range backlog {
-		writeSSE(&buf, line)
+	if stale {
+		buf.WriteString("event: reset\ndata: reload\n\n")
 	}
-	writeSSE(&buf, s.statusJSON())
-	_, _ = w.Write(buf.Bytes())
+	sent := since
+	send := func(ev *Event, fresh bool) bool {
+		if ev.ID <= sent {
+			return true
+		}
+		sent = ev.ID
+		if !f.Matches(ev) {
+			return true
+		}
+		var html bytes.Buffer
+		if err := tmpl.ExecuteTemplate(&html, "row", rowData{Ev: ev, Fresh: fresh}); err != nil {
+			s.logger.Error("render row", "err", err)
+			return false
+		}
+		writeSSE(&buf, s.dash.sseID(ev.ID), "row", html.Bytes())
+		return true
+	}
+	for _, ev := range s.dash.after(since) {
+		send(ev, false)
+	}
+	if _, err := w.Write(buf.Bytes()); err != nil {
+		return
+	}
 	flusher.Flush()
 
 	heartbeat := time.NewTicker(15 * time.Second)
@@ -147,23 +251,26 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
-		case line, ok := <-ch:
+		case ev, ok := <-ch:
 			if !ok {
-				return // too slow, dropped by broadcast
+				return // too slow: the browser reconnects with Last-Event-ID
 			}
 			buf.Reset()
-			writeSSE(&buf, line)
-			// Drain whatever else is queued to coalesce writes.
+			send(ev, true)
+			// Coalesce whatever else is queued into one write.
 			for drained := false; !drained; {
 				select {
 				case more, ok := <-ch:
 					if !ok {
 						return
 					}
-					writeSSE(&buf, more)
+					send(more, true)
 				default:
 					drained = true
 				}
+			}
+			if buf.Len() == 0 {
+				continue
 			}
 			if _, err := w.Write(buf.Bytes()); err != nil {
 				return
@@ -178,25 +285,27 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func writeSSE(buf *bytes.Buffer, line []byte) {
-	buf.WriteString("data: ")
-	buf.Write(line)
-	buf.WriteString("\n\n")
+func writeSSE(buf *bytes.Buffer, id, event string, data []byte) {
+	fmt.Fprintf(buf, "id: %s\nevent: %s\n", id, event)
+	for _, line := range bytes.Split(bytes.TrimRight(data, "\n"), []byte{'\n'}) {
+		buf.WriteString("data: ")
+		buf.Write(line)
+		buf.WriteByte('\n')
+	}
+	buf.WriteByte('\n')
 }
+
+// ---------- tailing ----------
 
 func (s *Server) pollLoop(ctx context.Context) {
 	poll := time.NewTicker(pollInterval)
-	status := time.NewTicker(statusInterval)
 	defer poll.Stop()
-	defer status.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-poll.C:
 			s.poll()
-		case <-status.C:
-			s.broadcast(s.statusJSON())
 		}
 	}
 }
@@ -211,8 +320,8 @@ func (s *Server) poll() {
 	}
 }
 
-// readNew reads whatever was appended to path since the last poll and
-// broadcasts each complete line.
+// readNew reads whatever was appended to path since the last poll and adds
+// each complete line to the dashboard.
 func (s *Server) readNew(path string) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -250,44 +359,13 @@ func (s *Server) readNew(path string) {
 	}
 
 	for _, line := range lines {
-		var ev struct {
-			Target string `json:"target"`
-			PID    int    `json:"pid"`
-		}
-		if json.Unmarshal(line, &ev) != nil {
+		var ev querylog.Event
+		if json.Unmarshal(line, &ev) != nil || ev.Target == "" {
 			continue
 		}
 		s.notePID(ev.Target, ev.PID)
-		s.broadcast(line)
+		s.dash.add(ev)
 	}
-}
-
-// sortBacklog orders the initial backlog by timestamp: files are read one
-// after the other, so without it the live view starts grouped by target.
-func (s *Server) sortBacklog() {
-	ts := func(line []byte) string {
-		var ev struct {
-			TS string `json:"ts"`
-		}
-		_ = json.Unmarshal(line, &ev)
-		return ev.TS
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	keys := make([]time.Time, len(s.backlog))
-	for i, line := range s.backlog {
-		keys[i], _ = time.Parse(time.RFC3339Nano, ts(line))
-	}
-	idx := make([]int, len(s.backlog))
-	for i := range idx {
-		idx[i] = i
-	}
-	sort.SliceStable(idx, func(a, b int) bool { return keys[idx[a]].Before(keys[idx[b]]) })
-	sorted := make([][]byte, len(idx))
-	for i, j := range idx {
-		sorted[i] = s.backlog[j]
-	}
-	s.backlog = sorted
 }
 
 func (s *Server) notePID(target string, pid int) {
@@ -299,61 +377,19 @@ func (s *Server) notePID(target string, pid int) {
 	s.pids[target][pid] = struct{}{}
 }
 
-func (s *Server) broadcast(line []byte) {
-	line = bytes.Clone(line)
+// alivePIDs returns, per target, the tunnel processes still running.
+func (s *Server) alivePIDs() map[string][]int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.backlog) >= backlogSize {
-		s.backlog = s.backlog[len(s.backlog)-backlogSize+1:]
-	}
-	s.backlog = append(s.backlog, line)
-	for ch := range s.clients {
-		select {
-		case ch <- line:
-		default:
-			// Client can't keep up: disconnect it; the browser reconnects
-			// and gets the backlog.
-			close(ch)
-			delete(s.clients, ch)
-		}
-	}
-}
-
-type targetStatus struct {
-	Name  string `json:"name"`
-	Alive bool   `json:"alive"`
-	PIDs  []int  `json:"pids,omitempty"`
-}
-
-// statusJSON reports, per target, whether a tunnel process is running.
-func (s *Server) statusJSON() []byte {
-	s.mu.Lock()
-	byName := make(map[string]*targetStatus)
-	for _, name := range s.targets {
-		byName[name] = &targetStatus{Name: name}
-	}
+	out := make(map[string][]int)
 	for name, pids := range s.pids {
-		st := byName[name]
-		if st == nil {
-			st = &targetStatus{Name: name}
-			byName[name] = st
-		}
 		for pid := range pids {
 			if processAlive(pid) {
-				st.Alive = true
-				st.PIDs = append(st.PIDs, pid)
+				out[name] = append(out[name], pid)
 			}
 		}
-		sort.Ints(st.PIDs)
+		sort.Ints(out[name])
 	}
-	s.mu.Unlock()
-
-	list := make([]*targetStatus, 0, len(byName))
-	for _, st := range byName {
-		list = append(list, st)
-	}
-	sort.Slice(list, func(i, j int) bool { return list[i].Name < list[j].Name })
-	out, _ := json.Marshal(map[string]any{"kind": "status", "targets": list})
 	return out
 }
 
