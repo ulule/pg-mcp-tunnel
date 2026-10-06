@@ -182,7 +182,7 @@ func TestToolsUnrestricted(t *testing.T) {
 		t.Errorf("explain generic plan: %s", out)
 	}
 	hypo := map[string]any{"sql": "SELECT * FROM users WHERE name = 'n1'", "hypothetical_indexes": []any{map[string]any{"table": "users", "columns": []any{"name"}}}}
-	if out := c.ok("explain_query", hypo); !strings.Contains(out, "hypopg") && !strings.Contains(out, "crystaldba_idx_users_name_1") {
+	if out := c.ok("explain_query", hypo); !strings.Contains(out, "hypopg") && !strings.Contains(out, "pgmcp_idx_users_name_1") {
 		t.Errorf("explain hypothetical: %s", out)
 	}
 	hypo["hypothetical_indexes"] = []any{map[string]any{"table": "users (id); DROP TABLE users; --", "columns": []any{"name"}}}

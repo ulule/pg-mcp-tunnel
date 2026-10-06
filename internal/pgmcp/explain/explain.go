@@ -29,7 +29,7 @@ func (h HypotheticalIndex) Name() string {
 		}
 		cleaned[i] = strings.TrimRight(c, "_")
 	}
-	name := fmt.Sprintf("crystaldba_idx_%s_%s_%d", h.Table, strings.Join(cleaned, "_"), len(h.Columns))
+	name := fmt.Sprintf("pgmcp_idx_%s_%s_%d", h.Table, strings.Join(cleaned, "_"), len(h.Columns))
 	if u := h.using(); u != "btree" {
 		name += "_" + u
 	}

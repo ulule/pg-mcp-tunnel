@@ -1,19 +1,22 @@
-# Example config for pg-mcp-tunnel.
-# Copy to ~/.config/pg-mcp-tunnel/config.yaml and adjust.
+# Exemple de configuration pour pg-mcp-tunnel.
+# À copier dans ~/.config/pg-mcp-tunnel/config.yaml puis à adapter.
 
 targets:
-  # Direct local connection (no SSH).
+  # Connexion locale directe (sans SSH).
   local:
     postgres:
       uri: postgresql://user:password@localhost:5432/mydb?sslmode=disable
     access_mode: unrestricted
 
+  # Copie locale de la prod : lecture seule.
   copy_prod:
     postgres:
       uri: postgresql://user:password@localhost:5432/mydb2?sslmode=disable
-    access_mode: unrestricted
+    access_mode: restricted
+    # Fonctions en lecture seule à autoriser en plus en mode restricted.
+    # allowed_functions: [unaccent, generate_series]
 
-  # Remote target via SSH tunnel.
+  # Base distante via tunnel SSH.
   prod:
     ssh:
       host: remotehost.prod.com

@@ -1,7 +1,6 @@
-// Package pgmcp is the in-process Postgres MCP server, a Go port of
-// crystaldba/postgres-mcp. Tool names and parameters match postgres-mcp so
-// existing client permission rules (mcp__<target>__execute_sql, ...) keep
-// working.
+// Package pgmcp is the in-process Postgres MCP server. Tool names and
+// parameters match postgres-mcp so existing client permission rules
+// (mcp__<target>__execute_sql, ...) keep working.
 package pgmcp
 
 import (
