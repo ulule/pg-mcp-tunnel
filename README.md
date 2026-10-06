@@ -219,7 +219,10 @@ pkill -f 'pg-mcp-tunnel --target'
 ```bash
 make build      # ./pg-mcp-tunnel
 make test       # go test -race ./...
+make lint       # golangci-lint (config : .golangci.yml)
 ```
+
+La CI GitHub Actions (`.github/workflows/ci.yml`) lance sur chaque push sur `main` et chaque PR : `go mod tidy -diff`, golangci-lint, puis les tests (avec `-race`) contre un Postgres 17 en service container, donc tests d'intégration compris.
 
 Les tests d'intégration ont besoin d'une base Postgres jetable :
 

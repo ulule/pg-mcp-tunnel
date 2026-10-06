@@ -1,4 +1,4 @@
-.PHONY: build install test
+.PHONY: build install test lint
 
 build:
 	go build -o pg-mcp-tunnel ./cmd/pg-mcp-tunnel
@@ -8,3 +8,6 @@ install:
 
 test:
 	go test -race ./...
+
+lint:
+	golangci-lint run ./...

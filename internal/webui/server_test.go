@@ -219,7 +219,12 @@ func TestRoutes(t *testing.T) {
 	if row := get(t, ts, "/event/2?open=1"); !strings.Contains(row, `class="detail"`) || !strings.Contains(row, "conn <b>#1</b>") {
 		t.Errorf("expanded row: %s", row)
 	}
-	if resp, _ := http.Get(ts.URL + "/event/999"); resp.StatusCode != http.StatusNotFound {
+	resp, err := http.Get(ts.URL + "/event/999")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("unknown event: %d", resp.StatusCode)
 	}
 
