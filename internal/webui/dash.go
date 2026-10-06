@@ -185,12 +185,6 @@ func (d *dash) after(id uint64) []*Event {
 	return append([]*Event(nil), d.events[i:]...)
 }
 
-func (d *dash) lastID() uint64 {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.nextID - 1
-}
-
 func (d *dash) get(id uint64) *Event {
 	d.mu.Lock()
 	defer d.mu.Unlock()

@@ -70,9 +70,9 @@ func Run(ctx context.Context, q pgdb.Querier, healthType string) string {
 	runCheck := func(prefix string, check func(context.Context, pgdb.Querier) (string, error)) {
 		val, err := check(ctx, q)
 		if err != nil {
-			res.WriteString(fmt.Sprintf("%sError: %v\n", prefix, err))
+			fmt.Fprintf(&res, "%sError: %v\n", prefix, err)
 		} else {
-			res.WriteString(fmt.Sprintf("%s%s\n", prefix, val))
+			fmt.Fprintf(&res, "%s%s\n", prefix, val)
 		}
 	}
 
