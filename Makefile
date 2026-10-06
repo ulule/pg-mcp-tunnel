@@ -1,2 +1,2 @@
 build:
-	go build -o pg_mcp_tunnel ./cmd/pg-mcp-tunnel
+	go build -o pg-mcp-tunnel ./cmd/pg-mcp-tunnel
