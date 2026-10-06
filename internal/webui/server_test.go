@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ulule/pg-mcp-tunnel/internal/querylog"
@@ -32,7 +33,7 @@ func TestLocalOnlyRejectsForeignHosts(t *testing.T) {
 func TestTailHandlesPartialLinesAndTruncation(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "db"+querylog.FileSuffix)
-	s := New(dir, nil, nil)
+	s := New(dir, nil, "", nil)
 
 	write := func(flag int, data string) {
 		f, err := os.OpenFile(path, flag|os.O_CREATE|os.O_WRONLY, 0o600)
@@ -64,5 +65,37 @@ func TestTailHandlesPartialLinesAndTruncation(t *testing.T) {
 	}
 	if _, ok := s.pids["db"][2]; !ok {
 		t.Fatalf("pid 2 not tracked: %v", s.pids)
+	}
+}
+
+func TestMaskSecrets(t *testing.T) {
+	in := "targets:\n  a:\n    postgres:\n      uri: postgresql://bob:s3cr3t@localhost:5432/db?sslmode=disable\n      password: hunter2\n      user: bob\n"
+	got := maskSecrets(in)
+	for _, leak := range []string{"s3cr3t", "hunter2"} {
+		if strings.Contains(got, leak) {
+			t.Errorf("secret %q not masked:\n%s", leak, got)
+		}
+	}
+	for _, keep := range []string{"postgresql://bob:***@localhost:5432/db", `password: "***"`, "user: bob"} {
+		if !strings.Contains(got, keep) {
+			t.Errorf("missing %q in:\n%s", keep, got)
+		}
+	}
+}
+
+func TestOpenConfigRequiresSameOrigin(t *testing.T) {
+	s := New(t.TempDir(), nil, "/nonexistent/config.yaml", nil)
+	for origin, want := range map[string]int{
+		"http://evil.com":       http.StatusForbidden,
+		"http://localhost:7878": http.StatusNotFound, // allowed, but the file doesn't exist
+	} {
+		req := httptest.NewRequest("POST", "/config/open", nil)
+		req.Host = "localhost:7878"
+		req.Header.Set("Origin", origin)
+		rec := httptest.NewRecorder()
+		s.handleOpenConfig(rec, req)
+		if rec.Code != want {
+			t.Errorf("origin %q: got %d, want %d", origin, rec.Code, want)
+		}
 	}
 }

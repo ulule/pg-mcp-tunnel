@@ -9,7 +9,7 @@
 // Go net.Listen, and ssh -L binds a different internal port. Per inbound
 // connection we wait for ssh to come up and then proxy bytes through. This
 // means Open() returns within milliseconds (the listener is already up), so
-// the MCP subprocess (postgres-mcp) can start in parallel with ssh tunnel
+// the MCP server can start serving in parallel with ssh tunnel
 // setup, and Claude Desktop doesn't time out on the MCP initialize while ssh
 // is still negotiating with the remote.
 package sshtunnel
@@ -62,8 +62,8 @@ exit "$status"
 const sshReadyTimeout = 30 * time.Second
 
 // Time budget for a single accepted connection to wait for ssh to come up
-// before being dropped. Should be ~equal to psycopg's connect_timeout we set
-// in the DSN so postgres-mcp gets a clean error rather than a deadlock.
+// before being dropped. Should be ~equal to the connect_timeout we set
+// in the DSN so the pool gets a clean error rather than a deadlock.
 const perConnWaitForReady = 30 * time.Second
 
 // Size of the in-memory ring that captures the tail of ssh's stderr. Enough
@@ -81,7 +81,7 @@ type Config struct {
 
 type Tunnel struct {
 	shepherd  *exec.Cmd
-	localPort int // user-visible port we listen on (passed to postgres-mcp)
+	localPort int // user-visible port we listen on (the pool connects here)
 	sshPort   int // internal port ssh -L binds to
 	listener  net.Listener
 	logger    *slog.Logger
@@ -125,7 +125,7 @@ func Open(ctx context.Context, cfg Config, remoteAddr string, logger *slog.Logge
 		return nil, fmt.Errorf("parse remote addr %q: %w", remoteAddr, err)
 	}
 
-	// Listener for the user-visible port: opened synchronously so postgres-mcp's
+	// Listener for the user-visible port: opened synchronously so the pool's
 	// first TCP connect always succeeds.
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -241,7 +241,7 @@ func (t *Tunnel) FailReason() error { return t.failReason }
 func (t *Tunnel) markFailed(err error) {
 	t.failOnce.Do(func() {
 		t.failReason = err
-		// Tear down the listener so further postgres-mcp reconnects get
+		// Tear down the listener so further pool reconnects get
 		// ECONNREFUSED immediately instead of waiting perConnWaitForReady.
 		if t.listener != nil {
 			_ = t.listener.Close()

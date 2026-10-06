@@ -39,9 +39,10 @@ const (
 )
 
 type Server struct {
-	dir     string
-	targets []string // configured targets, shown even before any event
-	logger  *slog.Logger
+	dir        string
+	targets    []string // configured targets, shown even before any event
+	configPath string
+	logger     *slog.Logger
 
 	mu      sync.Mutex
 	backlog [][]byte
@@ -55,20 +56,22 @@ type tailFile struct {
 	partial []byte
 }
 
-func New(dir string, targets []string, logger *slog.Logger) *Server {
+func New(dir string, targets []string, configPath string, logger *slog.Logger) *Server {
 	return &Server{
-		dir:     dir,
-		targets: targets,
-		logger:  logger,
-		clients: make(map[chan []byte]struct{}),
-		files:   make(map[string]*tailFile),
-		pids:    make(map[string]map[int]struct{}),
+		dir:        dir,
+		targets:    targets,
+		configPath: configPath,
+		logger:     logger,
+		clients:    make(map[chan []byte]struct{}),
+		files:      make(map[string]*tailFile),
+		pids:       make(map[string]map[int]struct{}),
 	}
 }
 
 // Serve polls the events files and serves HTTP on l until ctx is canceled.
 func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 	s.poll() // load backlog before the first client connects
+	s.sortBacklog()
 	go s.pollLoop(ctx)
 
 	mux := http.NewServeMux()
@@ -77,6 +80,8 @@ func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 		_, _ = w.Write(indexHTML)
 	})
 	mux.HandleFunc("GET /events", s.handleEvents)
+	mux.HandleFunc("GET /config", s.handleConfig)
+	mux.HandleFunc("POST /config/open", s.handleOpenConfig)
 
 	srv := &http.Server{Handler: localOnly(mux), ReadHeaderTimeout: 5 * time.Second}
 	go func() {
@@ -255,6 +260,34 @@ func (s *Server) readNew(path string) {
 		s.notePID(ev.Target, ev.PID)
 		s.broadcast(line)
 	}
+}
+
+// sortBacklog orders the initial backlog by timestamp: files are read one
+// after the other, so without it the live view starts grouped by target.
+func (s *Server) sortBacklog() {
+	ts := func(line []byte) string {
+		var ev struct {
+			TS string `json:"ts"`
+		}
+		_ = json.Unmarshal(line, &ev)
+		return ev.TS
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	keys := make([]time.Time, len(s.backlog))
+	for i, line := range s.backlog {
+		keys[i], _ = time.Parse(time.RFC3339Nano, ts(line))
+	}
+	idx := make([]int, len(s.backlog))
+	for i := range idx {
+		idx[i] = i
+	}
+	sort.SliceStable(idx, func(a, b int) bool { return keys[idx[a]].Before(keys[idx[b]]) })
+	sorted := make([][]byte, len(idx))
+	for i, j := range idx {
+		sorted[i] = s.backlog[j]
+	}
+	s.backlog = sorted
 }
 
 func (s *Server) notePID(target string, pid int) {

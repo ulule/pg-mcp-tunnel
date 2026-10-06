@@ -13,6 +13,7 @@ const (
 	KindQuery      = "query"      // one round trip, ended by ReadyForQuery
 	KindError      = "error"      // server error outside any query (e.g. auth)
 	KindOpaque     = "opaque"     // connection switched to TLS/GSS: no visibility
+	KindTool       = "tool"       // one MCP tool call answered to the model
 )
 
 type Event struct {
@@ -30,4 +31,11 @@ type Event struct {
 	Rows       int64     `json:"rows,omitempty"`
 	Error      string    `json:"error,omitempty"`
 	SQLState   string    `json:"sqlstate,omitempty"`
+
+	// Tool events only: the MCP tool name and estimated tokens of the
+	// arguments the model sent (TokensIn) and of the answer it got back.
+	Tool     string `json:"tool,omitempty"`
+	TokensIn int    `json:"tokens_in,omitempty"`
+	Tokens   int    `json:"tokens,omitempty"`
+	Bytes    int    `json:"bytes,omitempty"`
 }

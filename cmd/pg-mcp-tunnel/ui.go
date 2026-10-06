@@ -54,7 +54,7 @@ func runUI(args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	return webui.New(dir, targets, logger).Serve(ctx, l)
+	return webui.New(dir, targets, *configPath, logger).Serve(ctx, l)
 }
 
 func openBrowser(url string) {

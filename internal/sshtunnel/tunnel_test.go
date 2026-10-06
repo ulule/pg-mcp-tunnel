@@ -76,7 +76,7 @@ func TestShepherdExitsCleanlyWhenChildExits(t *testing.T) {
 //
 // It uses an SSH config that points at a black hole — ssh will never establish
 // the tunnel, but that must not prevent Open() from returning quickly or the
-// local listener from accepting. This is the property that lets postgres-mcp
+// local listener from accepting. This is the property that lets the MCP server
 // start in parallel with ssh tunnel setup.
 func TestOpenReturnsImmediatelyAndListens(t *testing.T) {
 	// Pick a port that is definitely closed locally so ssh's TCP connect spins.

@@ -20,6 +20,9 @@ type Target struct {
 	SSH        *SSHConfig     `yaml:"ssh,omitempty"`
 	Postgres   PostgresConfig `yaml:"postgres"`
 	AccessMode string         `yaml:"access_mode"`
+	// AllowedFunctions extends the restricted-mode function allowlist
+	// (e.g. read-only functions from your own schema or extensions).
+	AllowedFunctions []string `yaml:"allowed_functions,omitempty"`
 }
 
 type SSHConfig struct {
@@ -129,7 +132,7 @@ func (t *Target) DirectAddr() (string, error) {
 	return net.JoinHostPort(host, port), nil
 }
 
-// BuildURI returns the DATABASE_URI to pass to postgres-mcp.
+// BuildURI returns the connection URI for the MCP server's pool.
 // If the target uses SSH, localPort must be the port of the established tunnel.
 // For a direct target, localPort is the port of a local relay (see
 // DirectAddr), or 0 to return the configured URI as-is.
@@ -161,11 +164,10 @@ func (t *Target) BuildURI(localPort int) string {
 	if t.Postgres.SSLMode != "" {
 		q.Set("sslmode", t.Postgres.SSLMode)
 	}
-	// Give psycopg patience while pg-mcp-tunnel's TCP proxy is waiting for the
-	// async ssh tunnel to come up. Without this, postgres-mcp's first connect
-	// to 127.0.0.1:localPort accepts at the TCP level (we always listen) but
-	// the postgres handshake hangs until ssh is ready — and psycopg's default
-	// connect_timeout is short enough to time out before fw1+ssh negotiates.
+	// Give the pool patience while pg-mcp-tunnel's TCP proxy is waiting for
+	// the async ssh tunnel to come up: the first connect to
+	// 127.0.0.1:localPort accepts at the TCP level (we always listen) but the
+	// postgres handshake hangs until ssh is ready.
 	q.Set("connect_timeout", "30")
 	u.RawQuery = q.Encode()
 	return u.String()
